@@ -50,11 +50,11 @@ export default function App({ Component, pageProps }: AppProps) {
         </>
       )}
 
-      {/* Google AdSense */}
+      {/* Google AdSense — use afterInteractive to avoid data-nscript warning */}
       {ADSENSE_ID && !ADSENSE_ID.includes("PLACEHOLDER") && (
         <Script
           src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE_ID}`}
-          strategy="lazyOnload"
+          strategy="afterInteractive"
           crossOrigin="anonymous"
         />
       )}

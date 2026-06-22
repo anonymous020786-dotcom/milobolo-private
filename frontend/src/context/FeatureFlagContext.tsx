@@ -18,14 +18,17 @@ export function FeatureFlagProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    supabase.from("feature_flags").select("key, enabled").then(({ data }) => {
-      if (data) {
-        const map: FlagMap = {};
-        data.forEach((f: { key: string; enabled: boolean }) => { map[f.key] = f.enabled; });
-        setFlags(map);
-      }
+    (async () => {
+      try {
+        const { data, error } = await supabase.from("feature_flags").select("key, enabled");
+        if (!error && data) {
+          const map: FlagMap = {};
+          data.forEach((f: { key: string; enabled: boolean }) => { map[f.key] = f.enabled; });
+          setFlags(map);
+        }
+      } catch {}
       setLoading(false);
-    });
+    })();
   }, []);
 
   const isEnabled = (key: string) => flags[key] !== false;
