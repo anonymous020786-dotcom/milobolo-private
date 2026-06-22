@@ -2,11 +2,11 @@ import {
   useState, useEffect, useRef, useCallback,
 } from "react";
 import { useRouter } from "next/router";
+import Head from "next/head";
 import {
-  Box, Container, Grid, Paper, Typography, Button, TextField,
-  IconButton, Chip, Tooltip, CircularProgress, Snackbar, Stack,
-  Dialog, DialogTitle, DialogContent, DialogActions, MenuItem,
-  Select, Collapse, useMediaQuery, useTheme, Badge, Divider,
+  Box, Typography, Button, TextField, IconButton, Chip,
+  Tooltip, CircularProgress, Snackbar, Stack, Dialog, DialogTitle,
+  DialogContent, DialogActions, MenuItem, Select, Paper, Divider,
 } from "@mui/material";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import VideocamOffIcon from "@mui/icons-material/VideocamOff";
@@ -14,25 +14,19 @@ import MicIcon from "@mui/icons-material/Mic";
 import MicOffIcon from "@mui/icons-material/MicOff";
 import ScreenShareIcon from "@mui/icons-material/ScreenShare";
 import StopScreenShareIcon from "@mui/icons-material/StopScreenShare";
-import SkipNextIcon from "@mui/icons-material/SkipNext";
-import StopIcon from "@mui/icons-material/Stop";
 import FlagIcon from "@mui/icons-material/Flag";
 import SendIcon from "@mui/icons-material/Send";
 import LockIcon from "@mui/icons-material/Lock";
 import PersonAddIcon from "@mui/icons-material/PersonAdd";
 import BlurOnIcon from "@mui/icons-material/BlurOn";
 import BlurOffIcon from "@mui/icons-material/BlurOff";
-import TuneIcon from "@mui/icons-material/Tune";
 import EmojiEmotionsIcon from "@mui/icons-material/EmojiEmotions";
 import CallIcon from "@mui/icons-material/Call";
 import CallEndIcon from "@mui/icons-material/CallEnd";
 import { io, Socket } from "socket.io-client";
-import Layout from "@/components/Layout";
 import styles from "@/styles/chat.module.css";
-import AdSlot from "@/components/AdSlot";
 import AgeGate from "@/components/AgeGate";
 import OnlineCounter from "@/components/OnlineCounter";
-import InterestPicker from "@/components/chat/InterestPicker";
 import FriendRequestDialog from "@/components/chat/FriendRequestDialog";
 import { useFeatureFlags } from "@/context/FeatureFlagContext";
 import { useAuth } from "@/context/AuthContext";
@@ -54,12 +48,10 @@ interface GeoInfo {
 
 interface Message {
   id: string;
-  from: string;
+  from: "me" | "peer" | "system";
   text: string;
   ts: number;
-  self: boolean;
   encrypted: boolean;
-  reactions: string[];
 }
 
 const ICE = [
@@ -76,8 +68,6 @@ const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👏", "�
 
 export default function Chat() {
   const router = useRouter();
-  const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down("md"));
   const { isEnabled } = useFeatureFlags();
   const { user, profile } = useAuth();
   const fpId = useFingerprint();
@@ -96,13 +86,12 @@ export default function Chat() {
   const [camOn, setCamOn] = useState(true);
   const [sharingScreen, setSharingScreen] = useState(false);
   const [peerSharingScreen, setPeerSharingScreen] = useState(false);
-  const [interests, setInterests] = useState<string[]>(initialInterests);
+  const [interests] = useState<string[]>(initialInterests);
   const [matchedInterest, setMatchedInterest] = useState<string | null>(null);
   const [peerCountry, setPeerCountry] = useState<GeoInfo | null>(null);
   const [myGeo, setMyGeo] = useState<GeoInfo | null>(null);
-  const [isTyping, setIsTyping] = useState(false);
   const [peerTyping, setPeerTyping] = useState(false);
-  const [showInterests, setShowInterests] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const [reportDialog, setReportDialog] = useState(false);
   const [reportReason, setReportReason] = useState("inappropriate");
   const [showReactions, setShowReactions] = useState(false);
@@ -111,7 +100,6 @@ export default function Chat() {
   const [e2eReady, setE2eReady] = useState(false);
   const [snack, setSnack] = useState("");
   const [sessionStart, setSessionStart] = useState<number | null>(null);
-  const [msgCount, setMsgCount] = useState(0);
   const [bgMode, setBgMode] = useState<BgMode>("none");
   const [showBgMenu, setShowBgMenu] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
@@ -167,6 +155,7 @@ export default function Chat() {
     matchedInterestRef.current = null;
     setPeerCountry(null);
     setStrangerLabel("Stranger");
+    setVoiceActive(false);
   }, []);
 
   const saveHistory = useCallback(async (rid: string, mc: number, mi: string | null) => {
@@ -213,7 +202,7 @@ export default function Chat() {
       }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") setSnack("Connection failed. Click Next to try again.");
+      if (pc.connectionState === "failed") setSnack("Connection failed. Click New to try again.");
     };
 
     if (isInitiator) {
@@ -235,6 +224,23 @@ export default function Chat() {
     e2eRef.current = session;
     socketRef.current?.emit("e2e_pubkey", { to: peerIdRef.current, publicKey: session.publicKeyB64 });
   }, [isEnabled]);
+
+  const playMatchSound = useCallback(() => {
+    try {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(520, ctx.currentTime);
+      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.5);
+    } catch {}
+  }, []);
 
   // ── Main socket setup ──────────────────────────────────────
   useEffect(() => {
@@ -264,7 +270,6 @@ export default function Chat() {
       playMatchSound();
       setSessionStart(Date.now());
       msgCountRef.current = 0;
-      setMsgCount(0);
       matchedInterestRef.current = mi;
       setMatchedInterest(mi);
       if (pc) {
@@ -273,13 +278,10 @@ export default function Chat() {
       }
       if (mc) setMyGeo(mc);
 
-      setMessages([{
-        id: "sys-0", from: "system",
-        text: mi
-          ? `Matched on "${mi}" ${pc ? `· ${pc.flag} ${pc.countryName}` : ""} · Say hi!`
-          : `Connected${pc ? ` · ${pc.flag} ${pc.countryName}` : ""} · Say hi! 👋`,
-        ts: Date.now(), self: false, encrypted: false, reactions: [],
-      }]);
+      const sysMsg = mi
+        ? `You're now chatting with a random stranger. You both like ${mi}. Say hi!`
+        : `You're now chatting with a random stranger${pc ? ` from ${pc.flag} ${pc.countryName}` : ""}. Say hi!`;
+      setMessages([{ id: "sys-0", from: "system", text: sysMsg, ts: Date.now(), encrypted: false }]);
 
       if (mode === "video") createPeerConnection(isInitiator);
       await startE2E();
@@ -290,11 +292,25 @@ export default function Chat() {
       const shared = await deriveSharedKey(e2eRef.current.keyPair, publicKey);
       sharedKeyRef.current = shared;
       setE2eReady(true);
-      setSnack("🔒 End-to-end encryption active");
     });
 
     socket.on("signal", async ({ from, signal }) => {
-      if (!pcRef.current) return;
+      if (!pcRef.current) {
+        // Incoming call on text mode (voice toggle)
+        if (signal.type === "offer") {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }).catch(() => null);
+          if (!stream) return;
+          localStreamRef.current = stream;
+          const pc = createPeerConnection(false);
+          await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit("signal", { to: from, signal: { type: "answer", sdp: pc.localDescription } });
+          setVoiceActive(true);
+          setSnack("📞 Incoming voice call accepted.");
+        }
+        return;
+      }
       if (signal.type === "offer") {
         await pcRef.current.setRemoteDescription(new RTCSessionDescription(signal.sdp));
         const answer = await pcRef.current.createAnswer();
@@ -315,10 +331,9 @@ export default function Chat() {
       }
       setMessages((prev) => [
         ...prev,
-        { id: `${ts}-${Math.random()}`, from: "peer", text: decoded, ts, self: false, encrypted: !!encrypted, reactions: [] },
+        { id: `${ts}-${Math.random()}`, from: "peer", text: decoded, ts, encrypted: !!encrypted },
       ]);
       msgCountRef.current += 1;
-      setMsgCount((c) => c + 1);
     });
 
     socket.on("typing", ({ typing }) => setPeerTyping(typing));
@@ -347,8 +362,8 @@ export default function Chat() {
       setState("ended");
       setMessages((prev) => [...prev, {
         id: "sys-end", from: "system",
-        text: "Stranger disconnected. Press New to find someone else.",
-        ts: Date.now(), self: false, encrypted: false, reactions: [],
+        text: "Your conversational partner has disconnected.",
+        ts: Date.now(), encrypted: false,
       }]);
       await saveHistory(roomIdRef.current, msgCountRef.current, matchedInterestRef.current);
       cleanup();
@@ -360,31 +375,6 @@ export default function Chat() {
     return () => { socket.disconnect(); cleanup(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fpId, mode]);
-
-  // Auto-start on page load
-  useEffect(() => {
-    if (router.isReady) {
-      setTimeout(() => startSearch(), 300);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router.isReady]);
-
-  const playMatchSound = useCallback(() => {
-    try {
-      const ctx = new AudioContext();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(520, ctx.currentTime);
-      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.12);
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.5);
-    } catch {}
-  }, []);
 
   const startSearch = useCallback(async () => {
     if (mode === "video") {
@@ -419,7 +409,7 @@ export default function Chat() {
     socketRef.current?.emit("next");
   }, [cleanup, saveHistory]);
 
-  // Keyboard shortcuts — declared after handleStop/handleNext to avoid TDZ
+  // Keyboard shortcuts — after handleStop/handleNext to avoid TDZ
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -430,6 +420,14 @@ export default function Chat() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [handleStop, handleNext]);
+
+  // Auto-start on page load
+  useEffect(() => {
+    if (router.isReady) {
+      setTimeout(() => startSearch(), 300);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router.isReady]);
 
   const toggleMic = () => {
     localStreamRef.current?.getAudioTracks().forEach((t) => { t.enabled = !micOn; });
@@ -455,7 +453,7 @@ export default function Chat() {
         localStreamRef.current = stream;
         createPeerConnection(true);
         setVoiceActive(true);
-        setSnack("🎙️ Voice call started — peer needs to accept.");
+        setSnack("🎙️ Voice call starting…");
       } catch {
         setSnack("Mic access denied.");
       }
@@ -529,10 +527,9 @@ export default function Chat() {
 
     setMessages((prev) => [...prev, {
       id: `${Date.now()}-me`, from: "me", text: plain, ts: Date.now(),
-      self: true, encrypted: isEnabled("e2e_encryption"), reactions: [],
+      encrypted: isEnabled("e2e_encryption"),
     }]);
     msgCountRef.current += 1;
-    setMsgCount((c) => c + 1);
   }, [text, roomId, isEnabled]);
 
   const sendReaction = (emoji: string) => {
@@ -570,154 +567,184 @@ export default function Chat() {
     setSnack("Report submitted. Thank you.");
   };
 
-  // ─── Render ──────────────────────────────────────────────────
   const isConnected = state === "connected";
   const isWaiting = state === "waiting";
 
+  // ─── Render ────────────────────────────────────────────────
   return (
-    <Layout title="Chat" noNav>
+    <>
+      <Head><title>MiloBolo — {mode === "video" ? "Video" : "Text"} Chat</title></Head>
       <AgeGate />
 
-      {/* Minimal top bar */}
-      <Box sx={{
-        px: 2, py: 1, display: "flex", alignItems: "center", gap: 1,
-        borderBottom: "1px solid rgba(255,255,255,0.06)",
-        bgcolor: "background.default",
-      }}>
-        <Typography
-          fontWeight={800} fontSize={18} sx={{
-            background: "linear-gradient(135deg,#6C63FF,#FF6584)",
-            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
-            cursor: "pointer", mr: 1,
-          }}
-          onClick={() => router.push("/")}
-        >
-          MiloBolo
-        </Typography>
-        <OnlineCounter />
-        {e2eReady && (
-          <Chip icon={<LockIcon sx={{ fontSize: "12px !important" }} />}
-            label="E2E" size="small"
-            sx={{ bgcolor: "rgba(76,175,80,0.1)", color: "success.main", border: "1px solid rgba(76,175,80,0.3)", height: 22 }} />
-        )}
-        {myGeo && (
-          <Chip label={`You ${myGeo.flag}`} size="small" variant="outlined"
-            sx={{ height: 22, fontSize: 11, borderColor: "rgba(255,255,255,0.15)" }} />
-        )}
-        <Box sx={{ flex: 1 }} />
-        {isEnabled("interest_matching") && (
-          <Tooltip title="Set interests">
-            <IconButton size="small" onClick={() => setShowInterests((v) => !v)} color={interests.length > 0 ? "primary" : "default"}>
-              <Badge badgeContent={interests.length || undefined} color="primary">
-                <TuneIcon fontSize="small" />
-              </Badge>
-            </IconButton>
-          </Tooltip>
-        )}
-      </Box>
+      <Box sx={{ height: "100vh", display: "flex", flexDirection: "column", bgcolor: "background.default", overflow: "hidden" }}>
 
-      {/* Interest picker */}
-      <Collapse in={showInterests}>
-        <Box sx={{ px: 2, py: 1.5, borderBottom: "1px solid rgba(255,255,255,0.06)", bgcolor: "background.paper" }}>
-          <InterestPicker interests={interests} onChange={setInterests} />
+        {/* ── Top bar (Omegle-style) ── */}
+        <Box sx={{
+          flexShrink: 0,
+          borderBottom: "1px solid rgba(255,255,255,0.08)",
+          bgcolor: "background.paper",
+          px: 2, py: 0,
+          display: "flex", alignItems: "stretch",
+        }}>
+          {/* Logo */}
+          <Typography
+            fontWeight={900} fontSize={18}
+            onClick={() => router.push("/")}
+            sx={{
+              cursor: "pointer", pr: 3, mr: 1,
+              display: "flex", alignItems: "center",
+              background: "linear-gradient(135deg,#6C63FF,#FF6584)",
+              WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+              borderRight: "1px solid rgba(255,255,255,0.08)",
+            }}>
+            MiloBolo
+          </Typography>
+
+          {/* Mode tabs */}
+          {[
+            { label: "Video", val: "video", path: "/camera-test?mode=video" },
+            { label: "Text", val: "text", path: "/chat?mode=text" },
+            { label: "Spy (beta)", val: "spy", path: "/spy" },
+          ].map((tab) => (
+            <Box
+              key={tab.val}
+              onClick={() => router.push(tab.path)}
+              sx={{
+                px: 2.5, py: 1.5, cursor: "pointer", fontSize: 14, fontWeight: 500,
+                color: mode === tab.val ? "primary.main" : "text.secondary",
+                borderBottom: mode === tab.val ? "2px solid #6C63FF" : "2px solid transparent",
+                mb: "-1px",
+                "&:hover": { color: "text.primary" },
+                transition: "color 0.15s",
+              }}>
+              {tab.label}
+            </Box>
+          ))}
+
+          <Box sx={{ flex: 1 }} />
+
+          {/* Online count */}
+          <Box sx={{ display: "flex", alignItems: "center", pr: 1 }}>
+            <OnlineCounter />
+          </Box>
+
+          {/* E2E badge */}
+          {e2eReady && (
+            <Box sx={{ display: "flex", alignItems: "center", px: 1 }}>
+              <Chip icon={<LockIcon sx={{ fontSize: "11px !important" }} />}
+                label="E2E" size="small"
+                sx={{ bgcolor: "rgba(76,175,80,0.1)", color: "success.main", border: "1px solid rgba(76,175,80,0.3)", height: 20, fontSize: 10 }} />
+            </Box>
+          )}
         </Box>
-      </Collapse>
 
-      <Container maxWidth="xl" sx={{
-        py: { xs: 1, md: 1.5 },
-        height: { md: "calc(100vh - 56px)" },
-        display: "flex", flexDirection: "column",
-      }}>
-        <Grid container spacing={{ xs: 1, md: 2 }} sx={{ flex: 1, minHeight: 0 }}>
+        {/* ── Main chat area ── */}
+        <Box sx={{ flex: 1, display: "flex", overflow: "hidden" }}>
 
-          {/* ── Video panel ─────────────────────────────────── */}
+          {/* ── Left: Video panel (video mode only) ── */}
           {mode === "video" && (
-            <Grid item xs={12} md={8} sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
-              <Paper sx={{ flex: 1, bgcolor: "#0a0a0a", borderRadius: 2, overflow: "hidden", position: "relative", minHeight: { xs: 220, md: 400 } }}>
+            <Box sx={{ flex: "0 0 65%", display: "flex", flexDirection: "column", borderRight: "1px solid rgba(255,255,255,0.07)" }}>
+
+              {/* Remote video */}
+              <Box sx={{ flex: 1, position: "relative", bgcolor: "#050508", overflow: "hidden" }}>
                 <video ref={remoteVideoRef} autoPlay playsInline className={styles.remoteVideo} />
 
-                {/* Floating stranger label */}
+                {/* Stranger label */}
                 {isConnected && (
-                  <Box sx={{ position: "absolute", top: 12, left: 12 }}>
+                  <Box sx={{ position: "absolute", top: 10, left: 10 }}>
                     <Chip label={strangerLabel} size="small"
-                      sx={{ bgcolor: "rgba(0,0,0,0.6)", color: "#fff", backdropFilter: "blur(4px)", fontSize: 12 }} />
+                      sx={{ bgcolor: "rgba(0,0,0,0.65)", color: "#fff", backdropFilter: "blur(6px)", fontSize: 12, fontWeight: 600 }} />
                   </Box>
                 )}
 
-                {/* Peer reaction */}
+                {/* Peer reaction float */}
                 {peerReaction && (
                   <Box sx={{
                     position: "absolute", top: "40%", left: "50%", transform: "translate(-50%,-50%)",
-                    fontSize: 72, animation: "fadeUp 2.5s ease forwards",
+                    fontSize: 64, pointerEvents: "none",
+                    animation: "fadeUp 2.5s ease forwards",
                     "@keyframes fadeUp": {
                       "0%": { opacity: 1, transform: "translate(-50%,-50%) scale(1)" },
-                      "100%": { opacity: 0, transform: "translate(-50%,-130%) scale(2)" },
+                      "100%": { opacity: 0, transform: "translate(-50%,-130%) scale(1.8)" },
                     },
                   }}>{peerReaction}</Box>
                 )}
 
-                {/* Overlay for non-connected states */}
+                {/* Screen share badge */}
+                {peerSharingScreen && (
+                  <Box sx={{ position: "absolute", top: 10, right: 10 }}>
+                    <Chip label="Sharing screen" size="small" color="warning" sx={{ fontSize: 11 }} />
+                  </Box>
+                )}
+
+                {/* Overlay when not connected */}
                 {!isConnected && (
-                  <Box sx={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-                    alignItems: "center", justifyContent: "center", bgcolor: "rgba(0,0,0,0.88)" }}>
+                  <Box sx={{
+                    position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+                    alignItems: "center", justifyContent: "center",
+                    bgcolor: "rgba(5,5,8,0.92)",
+                  }}>
                     {isWaiting ? (
                       <>
                         <CircularProgress color="primary" sx={{ mb: 2 }} />
-                        <Typography color="text.secondary">
-                          Finding someone{interests.length ? ` into ${interests[0]}` : ""}…
+                        <Typography color="text.secondary" fontSize={14}>
+                          Looking for someone to chat with{interests.length ? ` (${interests[0]})` : ""}…
                         </Typography>
-                        <Button variant="outlined" color="error" size="small" sx={{ mt: 2 }} onClick={handleStop}>Cancel</Button>
                       </>
                     ) : state === "ended" ? (
-                      <Box sx={{ textAlign: "center" }}>
-                        <Typography variant="h6" mb={2} color="text.secondary">Stranger disconnected</Typography>
-                        <Button variant="contained" size="large" onClick={startSearch}
-                          sx={{ px: 4, borderRadius: 3 }}>New Chat</Button>
+                      <Box textAlign="center">
+                        <Typography color="text.secondary" mb={2}>Stranger disconnected.</Typography>
+                        <Button variant="contained" onClick={startSearch} sx={{ borderRadius: 2 }}>New Conversation</Button>
                       </Box>
                     ) : null}
                   </Box>
                 )}
 
-                {/* Local preview PiP */}
-                <Box sx={{ position: "absolute", bottom: 12, right: 12,
-                  width: { xs: 100, md: 140 }, height: { xs: 70, md: 90 },
+                {/* Local PiP */}
+                <Box sx={{
+                  position: "absolute", bottom: 10, right: 10,
+                  width: { xs: 90, md: 130 }, height: { xs: 64, md: 88 },
                   borderRadius: 1.5, overflow: "hidden",
-                  border: "2px solid rgba(108,99,255,0.5)",
-                  boxShadow: "0 4px 20px rgba(0,0,0,0.6)" }}>
+                  border: "2px solid rgba(108,99,255,0.4)",
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.7)",
+                }}>
                   <video ref={localVideoRef} autoPlay playsInline muted className={styles.localVideo} />
                 </Box>
-              </Paper>
+              </Box>
 
-              {/* Video controls */}
-              <Paper sx={{ px: 1.5, py: 1, display: "flex", alignItems: "center", gap: 0.5, borderRadius: 2, flexWrap: "wrap" }}>
-                <Tooltip title={micOn ? "Mute mic" : "Unmute mic"}>
-                  <IconButton onClick={toggleMic} color={micOn ? "default" : "error"} size="small">
-                    {micOn ? <MicIcon /> : <MicOffIcon />}
-                  </IconButton>
+              {/* Video controls bar */}
+              <Box sx={{
+                flexShrink: 0, px: 1.5, py: 1,
+                bgcolor: "background.paper",
+                borderTop: "1px solid rgba(255,255,255,0.06)",
+                display: "flex", alignItems: "center", gap: 0.5,
+              }}>
+                <Tooltip title={micOn ? "Mute" : "Unmute"}>
+                  <IconButton onClick={toggleMic} size="small" color={micOn ? "default" : "error"}><MicIcon fontSize="small" /></IconButton>
                 </Tooltip>
                 <Tooltip title={camOn ? "Camera off" : "Camera on"}>
-                  <IconButton onClick={toggleCam} color={camOn ? "default" : "error"} size="small">
-                    {camOn ? <VideocamIcon /> : <VideocamOffIcon />}
+                  <IconButton onClick={toggleCam} size="small" color={camOn ? "default" : "error"}>
+                    {camOn ? <VideocamIcon fontSize="small" /> : <VideocamOffIcon fontSize="small" />}
                   </IconButton>
                 </Tooltip>
                 {isEnabled("screen_sharing") && isConnected && (
                   <Tooltip title={sharingScreen ? "Stop sharing" : "Share screen"}>
-                    <IconButton onClick={toggleScreenShare} color={sharingScreen ? "primary" : "default"} size="small">
-                      {sharingScreen ? <StopScreenShareIcon /> : <ScreenShareIcon />}
+                    <IconButton onClick={toggleScreenShare} size="small" color={sharingScreen ? "primary" : "default"}>
+                      {sharingScreen ? <StopScreenShareIcon fontSize="small" /> : <ScreenShareIcon fontSize="small" />}
                     </IconButton>
                   </Tooltip>
                 )}
                 {isEnabled("virtual_bg") && (
                   <Box sx={{ position: "relative" }}>
-                    <Tooltip title="Virtual background">
-                      <IconButton onClick={() => setShowBgMenu((v) => !v)} color={bgMode !== "none" ? "primary" : "default"} size="small">
-                        {bgMode !== "none" ? <BlurOnIcon /> : <BlurOffIcon />}
+                    <Tooltip title="Background">
+                      <IconButton onClick={() => setShowBgMenu((v) => !v)} size="small" color={bgMode !== "none" ? "primary" : "default"}>
+                        {bgMode !== "none" ? <BlurOnIcon fontSize="small" /> : <BlurOffIcon fontSize="small" />}
                       </IconButton>
                     </Tooltip>
                     {showBgMenu && (
-                      <Paper sx={{ position: "absolute", bottom: 44, left: 0, p: 1, zIndex: 10, minWidth: 140 }}>
+                      <Paper sx={{ position: "absolute", bottom: 40, left: 0, p: 0.5, zIndex: 10, minWidth: 160 }}>
                         {(["none", "blur", "color"] as BgMode[]).map((m) => (
-                          <MenuItem key={m} onClick={() => toggleBackground(m)} selected={bgMode === m} sx={{ borderRadius: 1, fontSize: 14 }}>
+                          <MenuItem key={m} onClick={() => toggleBackground(m)} selected={bgMode === m} sx={{ borderRadius: 1, fontSize: 13 }}>
                             {m === "none" ? "No effect" : m === "blur" ? "Blur background" : "Dark background"}
                           </MenuItem>
                         ))}
@@ -725,215 +752,177 @@ export default function Chat() {
                     )}
                   </Box>
                 )}
-
                 <Box sx={{ flex: 1 }} />
-
                 {isConnected && isEnabled("friend_requests") && (
-                  <Tooltip title="Send connection request">
-                    <IconButton onClick={sendFriendRequest} size="small"><PersonAddIcon /></IconButton>
+                  <Tooltip title="Connect with stranger">
+                    <IconButton size="small" onClick={sendFriendRequest}><PersonAddIcon fontSize="small" /></IconButton>
                   </Tooltip>
                 )}
                 {isConnected && (
-                  <Tooltip title="Report user">
-                    <IconButton onClick={() => setReportDialog(true)} color="warning" size="small"><FlagIcon /></IconButton>
+                  <Tooltip title="Report">
+                    <IconButton size="small" color="warning" onClick={() => setReportDialog(true)}><FlagIcon fontSize="small" /></IconButton>
                   </Tooltip>
-                )}
-                <Divider orientation="vertical" flexItem sx={{ mx: 0.5, opacity: 0.3 }} />
-                {isConnected && (
-                  <Button variant="outlined" size="small" startIcon={<SkipNextIcon />} onClick={handleNext}
-                    sx={{ borderRadius: 2 }}>
-                    Next
-                  </Button>
-                )}
-                <Button
-                  variant={isConnected || isWaiting ? "outlined" : "contained"}
-                  color={isConnected || isWaiting ? "error" : "primary"}
-                  size="small"
-                  startIcon={isConnected || isWaiting ? <StopIcon /> : <VideocamIcon />}
-                  onClick={isConnected || isWaiting ? handleStop : startSearch}
-                  sx={{ borderRadius: 2 }}>
-                  {isConnected ? "Stop" : isWaiting ? "Cancel" : "Start"}
-                </Button>
-              </Paper>
-            </Grid>
-          )}
-
-          {/* ── Chat panel ─────────────────────────────────── */}
-          <Grid item xs={12} md={mode === "video" ? 4 : 12}
-            sx={{ display: "flex", flexDirection: "column", minHeight: { xs: 400, md: 0 } }}>
-
-            {isEnabled("google_ads") && mode === "text" && (
-              <Box sx={{ mb: 1 }}><AdSlot slotId="chat-top" format="horizontal" /></Box>
-            )}
-
-            <Paper sx={{ flex: 1, display: "flex", flexDirection: "column", borderRadius: 2, overflow: "hidden" }}>
-
-              {/* Chat header */}
-              <Box sx={{ px: 2, py: 1.2, borderBottom: "1px solid rgba(255,255,255,0.06)",
-                display: "flex", alignItems: "center", gap: 1 }}>
-                {/* Status */}
-                <Box sx={{
-                  width: 8, height: 8, borderRadius: "50%",
-                  bgcolor: isConnected ? "success.main" : isWaiting ? "warning.main" : "text.disabled",
-                  flexShrink: 0,
-                }} />
-                <Typography variant="body2" fontWeight={600} sx={{ flex: 1 }}>
-                  {isConnected ? strangerLabel : isWaiting ? "Finding a stranger…" : "Ready to chat"}
-                </Typography>
-                {matchedInterest && (
-                  <Chip label={`✨ ${matchedInterest}`} size="small" color="primary" variant="outlined"
-                    sx={{ height: 20, fontSize: 11 }} />
-                )}
-                {peerSharingScreen && (
-                  <Chip label="Sharing screen" size="small" color="warning" sx={{ height: 20, fontSize: 10 }} />
-                )}
-                {voiceActive && mode === "text" && (
-                  <Chip label="🎙️ Voice" size="small" color="success" sx={{ height: 20, fontSize: 10 }} />
                 )}
               </Box>
+            </Box>
+          )}
 
-              {/* Text mode action bar */}
-              {mode === "text" && (
-                <Box sx={{ px: 1.5, py: 1, borderBottom: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 1 }}>
-                  {!isConnected && !isWaiting ? (
-                    <Button fullWidth variant="contained" size="small" onClick={startSearch} sx={{ borderRadius: 2 }}>
-                      {state === "ended" ? "New Chat" : "Start Chat"}
-                    </Button>
-                  ) : isWaiting ? (
-                    <Button fullWidth variant="outlined" color="error" size="small" onClick={handleStop} sx={{ borderRadius: 2 }}>
-                      Cancel
-                    </Button>
-                  ) : (
-                    <>
-                      <Button variant="contained" size="small" startIcon={<SkipNextIcon />} onClick={handleNext}
-                        sx={{ borderRadius: 2, flex: 1 }}>
-                        Next
-                      </Button>
-                      <Button variant="outlined" color="error" size="small" startIcon={<StopIcon />} onClick={handleStop}
-                        sx={{ borderRadius: 2 }}>
-                        Stop
-                      </Button>
-                      <Tooltip title={voiceActive ? "End voice call" : "Start voice call"}>
-                        <IconButton size="small" color={voiceActive ? "error" : "default"} onClick={toggleVoice}>
-                          {voiceActive ? <CallEndIcon fontSize="small" /> : <CallIcon fontSize="small" />}
-                        </IconButton>
-                      </Tooltip>
-                      {isEnabled("friend_requests") && (
-                        <Tooltip title="Send connection request">
-                          <IconButton size="small" onClick={sendFriendRequest}><PersonAddIcon fontSize="small" /></IconButton>
-                        </Tooltip>
-                      )}
-                      <Tooltip title="Report user">
-                        <IconButton size="small" color="warning" onClick={() => setReportDialog(true)}><FlagIcon fontSize="small" /></IconButton>
-                      </Tooltip>
-                    </>
-                  )}
+          {/* ── Right: Chat panel ── */}
+          <Box sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+
+            {/* Stop / New bar — Omegle style */}
+            <Box sx={{
+              flexShrink: 0, px: 2, py: 1,
+              bgcolor: "background.paper",
+              borderBottom: "1px solid rgba(255,255,255,0.07)",
+              display: "flex", alignItems: "center", gap: 1,
+            }}>
+              {matchedInterest && (
+                <Chip label={`You both like: ${matchedInterest}`} size="small" color="primary" variant="outlined"
+                  sx={{ height: 22, fontSize: 11, mr: "auto" }} />
+              )}
+              {!matchedInterest && myGeo && isConnected && (
+                <Typography variant="caption" color="text.disabled" sx={{ mr: "auto" }}>
+                  You {myGeo.flag} → {strangerLabel}
+                </Typography>
+              )}
+              {!matchedInterest && !myGeo && <Box sx={{ flex: 1 }} />}
+
+              {/* Voice toggle (text mode only) */}
+              {mode === "text" && isConnected && (
+                <Tooltip title={voiceActive ? "End voice call" : "Voice call"}>
+                  <IconButton size="small" color={voiceActive ? "error" : "default"} onClick={toggleVoice}>
+                    {voiceActive ? <CallEndIcon fontSize="small" /> : <CallIcon fontSize="small" />}
+                  </IconButton>
+                </Tooltip>
+              )}
+              {isConnected && (
+                <Tooltip title="Report"><IconButton size="small" color="warning" onClick={() => setReportDialog(true)}><FlagIcon fontSize="small" /></IconButton></Tooltip>
+              )}
+              {isConnected && isEnabled("friend_requests") && (
+                <Tooltip title="Connect"><IconButton size="small" onClick={sendFriendRequest}><PersonAddIcon fontSize="small" /></IconButton></Tooltip>
+              )}
+
+              {isConnected || isWaiting ? (
+                <>
+                  <Button
+                    variant="contained" size="small"
+                    onClick={handleNext}
+                    sx={{ borderRadius: 1.5, minWidth: 56, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" } }}>
+                    New
+                  </Button>
+                  <Button
+                    variant="outlined" color="error" size="small"
+                    onClick={handleStop}
+                    sx={{ borderRadius: 1.5, minWidth: 56 }}>
+                    Stop
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="contained" size="small"
+                  onClick={startSearch}
+                  sx={{ borderRadius: 1.5, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" } }}>
+                  {state === "ended" ? "New Conversation" : "Start"}
+                </Button>
+              )}
+            </Box>
+
+            {/* Message log — Omegle IRC style */}
+            <Box sx={{ flex: 1, overflowY: "auto", p: 2, fontFamily: "monospace", fontSize: 13.5, lineHeight: 1.7 }}>
+
+              {isWaiting && (
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, color: "text.disabled", mb: 1 }}>
+                  <CircularProgress size={14} />
+                  <Typography fontSize={13} color="text.disabled">
+                    Looking for someone to chat with…
+                  </Typography>
                 </Box>
               )}
 
-              {/* Messages */}
-              <Box sx={{ flex: 1, overflowY: "auto", p: 1.5, display: "flex", flexDirection: "column", gap: 0.75 }}>
-                {isWaiting && (
-                  <Box sx={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", py: 6 }}>
-                    <CircularProgress size={28} sx={{ mb: 1.5 }} />
-                    <Typography variant="body2" color="text.secondary">
-                      Looking for someone{interests.length ? ` into ${interests[0]}` : " to chat with"}…
+              {messages.map((m) => (
+                <Box key={m.id} sx={{ mb: 0.5 }}>
+                  {m.from === "system" ? (
+                    <Typography component="div" sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>
+                      {m.text}
                     </Typography>
-                  </Box>
-                )}
-
-                {messages.map((m) => (
-                  <Box key={m.id} sx={{ alignSelf: m.from === "system" ? "center" : m.self ? "flex-end" : "flex-start", maxWidth: "85%" }}>
-                    {m.from === "system" ? (
-                      <Typography variant="caption" color="text.secondary"
-                        sx={{ bgcolor: "rgba(108,99,255,0.08)", px: 2, py: 0.5, borderRadius: 10, display: "block", textAlign: "center" }}>
-                        {m.text}
+                  ) : (
+                    <Box sx={{ display: "flex", gap: 0.75 }}>
+                      <Typography component="span" sx={{
+                        fontWeight: 700, flexShrink: 0, fontSize: 13.5,
+                        color: m.from === "me" ? "#6C63FF" : "#FF6584",
+                      }}>
+                        {m.from === "me" ? "You" : strangerLabel}:
                       </Typography>
-                    ) : (
-                      <Box>
-                        {!m.self && (
-                          <Typography variant="caption" color="text.disabled" sx={{ pl: 1, mb: 0.25, display: "block" }}>
-                            {strangerLabel}
-                          </Typography>
-                        )}
-                        <Box sx={{
-                          bgcolor: m.self ? "primary.main" : "rgba(255,255,255,0.07)",
-                          px: 1.5, py: 0.875,
-                          borderRadius: m.self ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                          border: m.self ? "none" : "1px solid rgba(255,255,255,0.1)",
-                        }}>
-                          <Typography variant="body2" sx={{ wordBreak: "break-word", lineHeight: 1.5 }}>{m.text}</Typography>
-                          {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.5, ml: 0.5, verticalAlign: "middle" }} />}
-                        </Box>
-                        {m.reactions.length > 0 && (
-                          <Stack direction="row" spacing={0.25} sx={{ mt: 0.25, justifyContent: m.self ? "flex-end" : "flex-start" }}>
-                            {m.reactions.map((r, i) => (
-                              <Typography key={i} variant="caption"
-                                sx={{ bgcolor: "background.paper", px: 0.75, py: 0.25, borderRadius: 4, border: "1px solid rgba(255,255,255,0.1)" }}>
-                                {r}
-                              </Typography>
-                            ))}
-                          </Stack>
-                        )}
-                      </Box>
-                    )}
-                  </Box>
-                ))}
-
-                {peerTyping && (
-                  <Box sx={{ alignSelf: "flex-start" }}>
-                    <Box sx={{ bgcolor: "rgba(255,255,255,0.07)", px: 2, py: 1,
-                      borderRadius: "18px 18px 18px 4px", border: "1px solid rgba(255,255,255,0.1)",
-                      display: "inline-flex", gap: 0.5, alignItems: "center" }}>
-                      {[0, 1, 2].map((i) => (
-                        <Box key={i} sx={{
-                          width: 6, height: 6, borderRadius: "50%", bgcolor: "text.disabled",
-                          animation: "bounce 1.2s infinite", animationDelay: `${i * 0.2}s`,
-                          "@keyframes bounce": { "0%,80%,100%": { transform: "translateY(0)" }, "40%": { transform: "translateY(-5px)" } },
-                        }} />
-                      ))}
+                      <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: 13.5 }}>
+                        {m.text}
+                        {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
+                      </Typography>
                     </Box>
-                  </Box>
-                )}
-                <div ref={chatEndRef} />
-              </Box>
+                  )}
+                </Box>
+              ))}
 
-              {/* Input */}
-              <Box sx={{ p: 1, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-                <Collapse in={showReactions}>
-                  <Stack direction="row" spacing={0.5} sx={{ mb: 1, justifyContent: "center" }}>
-                    {REACTIONS.map((e) => (
-                      <IconButton key={e} size="small" onClick={() => sendReaction(e)} sx={{ fontSize: 20, p: 0.5 }}>{e}</IconButton>
-                    ))}
-                  </Stack>
-                </Collapse>
-                <Stack direction="row" spacing={0.5} alignItems="flex-end">
-                  <IconButton size="small" color={showReactions ? "primary" : "default"}
-                    onClick={() => setShowReactions((v) => !v)} disabled={!isConnected}>
-                    <EmojiEmotionsIcon fontSize="small" />
-                  </IconButton>
-                  <TextField
-                    size="small" fullWidth multiline maxRows={4}
-                    placeholder={isConnected ? (e2eReady ? "🔒 Encrypted message…" : "Type a message…") : "Connecting…"}
-                    value={text}
-                    onChange={(e) => handleTyping(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                    disabled={!isConnected}
-                    sx={{ "& .MuiOutlinedInput-root": { borderRadius: 3 } }}
-                  />
-                  <IconButton color="primary" onClick={sendMessage} disabled={!isConnected || !text.trim()}>
-                    <SendIcon fontSize="small" />
-                  </IconButton>
-                </Stack>
-              </Box>
-            </Paper>
+              {peerTyping && (
+                <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>
+                  Stranger is typing…
+                </Typography>
+              )}
+              <div ref={chatEndRef} />
+            </Box>
 
-            {isEnabled("google_ads") && mode === "video" && (
-              <Box sx={{ mt: 1 }}><AdSlot slotId="chat-sidebar" format="rectangle" /></Box>
+            {/* Reaction bar */}
+            {showReactions && isConnected && (
+              <Box sx={{ px: 2, py: 0.75, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 0.5, flexWrap: "wrap" }}>
+                {REACTIONS.map((e) => (
+                  <IconButton key={e} size="small" onClick={() => sendReaction(e)} sx={{ fontSize: 18, p: 0.4 }}>{e}</IconButton>
+                ))}
+              </Box>
             )}
-          </Grid>
-        </Grid>
-      </Container>
+
+            {/* Input row */}
+            <Box sx={{
+              flexShrink: 0, px: 1.5, py: 1,
+              borderTop: "1px solid rgba(255,255,255,0.07)",
+              bgcolor: "background.paper",
+              display: "flex", alignItems: "flex-end", gap: 0.5,
+            }}>
+              <Tooltip title="Reactions">
+                <IconButton size="small" color={showReactions ? "primary" : "default"}
+                  onClick={() => setShowReactions((v) => !v)} disabled={!isConnected}>
+                  <EmojiEmotionsIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+              <TextField
+                size="small" fullWidth multiline maxRows={5}
+                placeholder={
+                  !isConnected ? "Connecting…"
+                  : e2eReady ? "🔒 Type a message (encrypted)…"
+                  : "Type a message…"
+                }
+                value={text}
+                onChange={(e) => handleTyping(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                disabled={!isConnected}
+                sx={{
+                  "& .MuiOutlinedInput-root": {
+                    borderRadius: 2, fontSize: 13.5,
+                    bgcolor: "rgba(255,255,255,0.03)",
+                  },
+                }}
+              />
+              <Button
+                variant="contained" size="small"
+                onClick={sendMessage}
+                disabled={!isConnected || !text.trim()}
+                endIcon={<SendIcon sx={{ fontSize: "14px !important" }} />}
+                sx={{ borderRadius: 2, minWidth: 70, py: 1, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" } }}>
+                Send
+              </Button>
+            </Box>
+          </Box>
+        </Box>
+      </Box>
 
       {/* Report dialog */}
       <Dialog open={reportDialog} onClose={() => setReportDialog(false)} maxWidth="xs" fullWidth>
@@ -965,6 +954,6 @@ export default function Chat() {
 
       <Snackbar open={!!snack} autoHideDuration={4000} onClose={() => setSnack("")}
         message={snack} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
-    </Layout>
+    </>
   );
 }
