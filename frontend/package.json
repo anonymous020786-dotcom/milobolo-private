@@ -1,0 +1,41 @@
+{
+  "name": "milobolo-frontend",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@emotion/cache": "^11.13.1",
+    "@emotion/react": "^11.13.3",
+    "@emotion/server": "^11.11.0",
+    "@emotion/styled": "^11.13.0",
+    "@mui/icons-material": "^6.1.6",
+    "@mui/material": "^6.1.6",
+    "@mui/x-data-grid": "^7.22.2",
+    "@supabase/auth-helpers-nextjs": "^0.10.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "axios": "^1.7.7",
+    "next": "16.2.0",
+    "next-seo": "^6.6.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-google-recaptcha-v3": "^1.10.1",
+    "socket.io-client": "^4.7.5",
+    "swr": "^2.2.5",
+    "@aws-sdk/client-s3": "^3.654.0",
+    "@aws-sdk/s3-request-presigner": "^3.654.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "eslint": "^8.57.1",
+    "eslint-config-next": "16.2.0",
+    "typescript": "^5.6.3"
+  }
+}

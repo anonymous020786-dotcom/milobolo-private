@@ -1,0 +1,83 @@
+version: "3.9"
+
+services:
+  nginx:
+    build: ./nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/certs:/etc/letsencrypt
+      - ./nginx/www:/var/www/certbot
+    depends_on:
+      - frontend
+      - signaling
+    networks:
+      - milobolo
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+        - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        - NEXT_PUBLIC_SIGNALING_URL=${NEXT_PUBLIC_SIGNALING_URL}
+        - NEXT_PUBLIC_GA_ID=${NEXT_PUBLIC_GA_ID}
+        - NEXT_PUBLIC_RECAPTCHA_SITE_KEY=${NEXT_PUBLIC_RECAPTCHA_SITE_KEY}
+        - NEXT_PUBLIC_WHATSAPP_NUMBER=${NEXT_PUBLIC_WHATSAPP_NUMBER}
+        - NEXT_PUBLIC_TURN_URL=${NEXT_PUBLIC_TURN_URL}
+        - NEXT_PUBLIC_TURN_USERNAME=${NEXT_PUBLIC_TURN_USERNAME}
+        - NEXT_PUBLIC_TURN_CREDENTIAL=${NEXT_PUBLIC_TURN_CREDENTIAL}
+        - NEXT_PUBLIC_R2_PUBLIC_URL=${NEXT_PUBLIC_R2_PUBLIC_URL}
+        - NEXT_PUBLIC_SITE_URL=${NEXT_PUBLIC_SITE_URL}
+    restart: always
+    expose:
+      - "3000"
+    environment:
+      - NODE_ENV=production
+    networks:
+      - milobolo
+
+  signaling:
+    build: ./signaling
+    restart: always
+    expose:
+      - "4000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - RECAPTCHA_SECRET=${RECAPTCHA_SECRET_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - NODE_ENV=production
+    depends_on:
+      - redis
+    networks:
+      - milobolo
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - milobolo
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: always
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf
+    command: -c /etc/coturn/turnserver.conf
+
+volumes:
+  redis_data:
+
+networks:
+  milobolo:
+    driver: bridge
