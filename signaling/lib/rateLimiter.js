@@ -1,8 +1,18 @@
-const { RateLimiterRedis } = require("rate-limiter-flexible");
+const { RateLimiterRedis, RateLimiterMemory } = require("rate-limiter-flexible");
+
+function createLimiter(redis, opts) {
+  if (!redis || redis.status === "end" || redis.status === "close") {
+    return new RateLimiterMemory(opts);
+  }
+  try {
+    return new RateLimiterRedis({ storeClient: redis, ...opts });
+  } catch {
+    return new RateLimiterMemory(opts);
+  }
+}
 
 exports.createHttpLimiter = (redis) =>
-  new RateLimiterRedis({
-    storeClient: redis,
+  createLimiter(redis, {
     keyPrefix: "http_limit",
     points: 60,
     duration: 60,
@@ -10,8 +20,7 @@ exports.createHttpLimiter = (redis) =>
   });
 
 exports.createOtpLimiter = (redis) =>
-  new RateLimiterRedis({
-    storeClient: redis,
+  createLimiter(redis, {
     keyPrefix: "otp_limit",
     points: 3,
     duration: 300,

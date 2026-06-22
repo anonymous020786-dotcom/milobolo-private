@@ -19,7 +19,7 @@ export async function generateKeyPair(): Promise<E2ESession> {
     ["deriveKey"]
   );
   const exported = await crypto.subtle.exportKey("raw", keyPair.publicKey);
-  const publicKeyB64 = btoa(String.fromCharCode(...new Uint8Array(exported)));
+  const publicKeyB64 = btoa(String.fromCharCode(...Array.from(new Uint8Array(exported))));
   return { keyPair, sharedKey: null, publicKeyB64 };
 }
 
@@ -53,7 +53,7 @@ export async function encryptMessage(key: CryptoKey, plaintext: string): Promise
   const combined = new Uint8Array(iv.byteLength + ciphertext.byteLength);
   combined.set(iv, 0);
   combined.set(new Uint8Array(ciphertext), iv.byteLength);
-  return btoa(String.fromCharCode(...combined));
+  return btoa(String.fromCharCode(...Array.from(combined)));
 }
 
 // Decrypt base64 ciphertext → plaintext

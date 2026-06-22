@@ -1,5 +1,5 @@
 const CACHE = "milobolo-v1";
-const STATIC = ["/", "/chat", "/auth/login", "/auth/register", "/manifest.json"];
+const STATIC = ["/", "/chat", "/auth/login", "/auth/register", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(

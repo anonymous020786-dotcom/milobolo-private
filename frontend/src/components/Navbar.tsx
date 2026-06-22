@@ -18,8 +18,10 @@ export default function Navbar() {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const navLinks = [
-    { label: "Start Chat", href: "/chat" },
-    { label: "About", href: "/about" },
+    { label: "Video Chat", href: "/chat?mode=video" },
+    { label: "Text Chat", href: "/chat?mode=text" },
+    { label: "Spy Mode", href: "/spy" },
+    { label: "History", href: "/history" },
   ];
 
   return (

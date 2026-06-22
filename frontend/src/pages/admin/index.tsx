@@ -116,7 +116,7 @@ export default function AdminPanel() {
   const changeUserRole = async (userId: string, role: string) => {
     if (profile?.role !== "superadmin") return showMsg("error", "Only superadmin can change roles");
     await supabase.from("profiles").update({ role }).eq("id", userId);
-    setUsers((prev) => prev.map((u) => u.id === userId ? { ...u, role } : u));
+    setUsers((prev) => prev.map((u) => u.id === userId ? { ...u, role: role as "user" | "moderator" | "admin" | "superadmin" } : u));
     showMsg("success", "Role updated");
   };
 

@@ -1,3 +1,4 @@
+require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -7,6 +8,7 @@ const { RateLimiterRedis } = require("rate-limiter-flexible");
 const Redis = require("ioredis");
 const { createClient } = require("@supabase/supabase-js");
 const { v4: uuidv4 } = require("uuid");
+const fetch = require("node-fetch");
 const mailer = require("./lib/mailer");
 const rateLimiter = require("./lib/rateLimiter");
 
@@ -26,9 +28,12 @@ const io = new Server(server, {
 });
 
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379", {
-  password: process.env.REDIS_PASSWORD,
-  retryStrategy: (times) => Math.min(times * 100, 3000),
+  password: process.env.REDIS_PASSWORD || undefined,
+  retryStrategy: (times) => (times > 3 ? null : Math.min(times * 500, 3000)),
+  lazyConnect: true,
+  enableOfflineQueue: false,
 });
+redis.on("error", () => {});
 
 const supabase = createClient(
   process.env.SUPABASE_URL || "https://placeholder.supabase.co",
@@ -39,21 +44,27 @@ app.use(helmet());
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json({ limit: "10kb" }));
 
-// ─── HTTP rate limiter ──────────────────────────────────────
+// ─── HTTP rate limiters ─────────────────────────────────────
 const httpLimiter = rateLimiter.createHttpLimiter(redis);
 const otpLimiter = rateLimiter.createOtpLimiter(redis);
 
 app.use("/api/send-otp", (req, res, next) => {
-  otpLimiter.consume(req.ip).then(() => next()).catch(() =>
-    res.status(429).json({ error: "Too many OTP requests. Try again later." })
-  );
+  otpLimiter.consume(req.ip)
+    .then(() => next())
+    .catch((e) => {
+      if (e && e.msBeforeNext != null) return res.status(429).json({ error: "Too many OTP requests. Try again later." });
+      next();
+    });
 });
 
 app.use((req, res, next) => {
   if (req.path === "/api/send-otp") return next();
-  httpLimiter.consume(req.ip).then(() => next()).catch(() =>
-    res.status(429).json({ error: "Too many requests" })
-  );
+  httpLimiter.consume(req.ip)
+    .then(() => next())
+    .catch((e) => {
+      if (e && e.msBeforeNext != null) return res.status(429).json({ error: "Too many requests" });
+      next();
+    });
 });
 
 // ─── OTP endpoints ─────────────────────────────────────────
@@ -96,13 +107,17 @@ app.post("/api/verify-otp", async (req, res) => {
 
 // ─── Online count ───────────────────────────────────────────
 app.get("/api/online-count", async (req, res) => {
-  const count = await redis.get("online:count") || "0";
-  res.json({ count: parseInt(count) });
+  try {
+    const count = await redis.get("online:count") || "0";
+    res.json({ count: parseInt(count) });
+  } catch {
+    res.json({ count: memOnlineCount });
+  }
 });
 
 app.get("/health", (_, res) => res.json({ status: "ok", timestamp: Date.now() }));
 
-// ─── Socket.io rate limiter ─────────────────────────────────
+// ─── Socket.io rate limiters ────────────────────────────────
 const socketLimiter = new RateLimiterRedis({
   storeClient: redis, keyPrefix: "socket_limit",
   points: 30, duration: 60,
@@ -122,96 +137,210 @@ io.use(async (socket, next) => {
   }
 });
 
-// ─── Online count tracker ──────────────────────────────────
+// ─── In-memory fallbacks ────────────────────────────────────
+let memOnlineCount = 0;
+const memQueues = {};
+const memSocketMeta = {};
+
+function memQueuePush(key, val) {
+  if (!memQueues[key]) memQueues[key] = [];
+  memQueues[key].push(val);
+}
+function memQueuePop(key) {
+  if (!memQueues[key] || !memQueues[key].length) return null;
+  return memQueues[key].shift();
+}
+function memQueueRemove(key, val) {
+  if (memQueues[key]) memQueues[key] = memQueues[key].filter((v) => v !== val);
+}
+
 async function updateOnlineCount(delta) {
-  const count = await redis.incrby("online:count", delta);
-  const safeCount = Math.max(0, count);
-  if (safeCount !== count) await redis.set("online:count", 0);
-  io.emit("online_count", { count: safeCount });
-}
-
-// ─── Interest matching helpers ─────────────────────────────
-function buildQueueKeys(mode, interests = []) {
-  const keys = [`waiting:${mode}:any`];
-  interests.slice(0, 5).forEach((i) => {
-    keys.push(`waiting:${mode}:interest:${i.toLowerCase().replace(/\s+/g, "_")}`);
-  });
-  return keys;
-}
-
-async function findMatch(socketId, mode, interests) {
-  // Try interest queues first (best match)
-  for (const interest of interests.slice(0, 5)) {
-    const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
-    const waitingId = await redis.lpop(key);
-    if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: interest };
-  }
-  // Fallback to general queue
-  const waitingId = await redis.lpop(`waiting:${mode}:any`);
-  if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-  return null;
-}
-
-async function enqueue(socketId, mode, interests) {
-  const ttl = 300;
-  const generalKey = `waiting:${mode}:any`;
-  await redis.rpush(generalKey, socketId);
-  await redis.expire(generalKey, ttl);
-  for (const interest of interests.slice(0, 5)) {
-    const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
-    await redis.rpush(key, socketId);
-    await redis.expire(key, ttl);
+  try {
+    const count = await redis.incrby("online:count", delta);
+    const safeCount = Math.max(0, count);
+    if (safeCount !== count) await redis.set("online:count", 0);
+    memOnlineCount = safeCount;
+    io.emit("online_count", { count: safeCount });
+  } catch {
+    memOnlineCount = Math.max(0, memOnlineCount + delta);
+    io.emit("online_count", { count: memOnlineCount });
   }
 }
 
-async function dequeue(socketId, mode, interests) {
-  await redis.lrem(`waiting:${mode}:any`, 0, socketId);
-  for (const interest of (interests || [])) {
-    const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
-    await redis.lrem(key, 0, socketId);
+// ─── IP country lookup ──────────────────────────────────────
+const countryCache = new Map();
+async function getCountry(ip) {
+  if (!ip || ip === "::1" || ip.startsWith("127.") || ip.startsWith("172.") || ip.startsWith("192.168.")) {
+    return { country: "IN", countryName: "India", flag: "🇮🇳" };
+  }
+  if (countryCache.has(ip)) return countryCache.get(ip);
+  try {
+    const r = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode,country`, { timeout: 2000 });
+    const d = await r.json();
+    const result = { country: d.countryCode || "?", countryName: d.country || "Unknown", flag: countryToFlag(d.countryCode) };
+    countryCache.set(ip, result);
+    setTimeout(() => countryCache.delete(ip), 3600000); // 1h TTL
+    return result;
+  } catch {
+    return { country: "?", countryName: "Unknown", flag: "🌐" };
+  }
+}
+
+function countryToFlag(code) {
+  if (!code || code.length !== 2) return "🌐";
+  return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1F1E0 + c.charCodeAt(0) - 65));
+}
+
+// ─── Matchmaking helpers ────────────────────────────────────
+async function findMatch(socketId, mode, interests, country) {
+  try {
+    // Same-country interest match first
+    if (country && country !== "?") {
+      for (const interest of interests.slice(0, 5)) {
+        const key = `waiting:${mode}:${country}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
+        const waitingId = await redis.lpop(key);
+        if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: interest };
+      }
+      const countryKey = `waiting:${mode}:${country}:any`;
+      const waitingId = await redis.lpop(countryKey);
+      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
+    }
+    // Global interest match
+    for (const interest of interests.slice(0, 5)) {
+      const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
+      const waitingId = await redis.lpop(key);
+      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: interest };
+    }
+    // Global general queue
+    const waitingId = await redis.lpop(`waiting:${mode}:any`);
+    if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
+    return null;
+  } catch {
+    // In-memory fallback
+    for (const interest of interests.slice(0, 5)) {
+      const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
+      const waitingId = memQueuePop(key);
+      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: interest };
+    }
+    const waitingId = memQueuePop(`waiting:${mode}:any`);
+    if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
+    return null;
+  }
+}
+
+async function enqueue(socketId, mode, interests, country) {
+  try {
+    const ttl = 300;
+    // Country queue
+    if (country && country !== "?") {
+      await redis.rpush(`waiting:${mode}:${country}:any`, socketId);
+      await redis.expire(`waiting:${mode}:${country}:any`, ttl);
+    }
+    // Global queue
+    await redis.rpush(`waiting:${mode}:any`, socketId);
+    await redis.expire(`waiting:${mode}:any`, ttl);
+    for (const interest of interests.slice(0, 5)) {
+      const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
+      await redis.rpush(key, socketId);
+      await redis.expire(key, ttl);
+    }
+  } catch {
+    memQueuePush(`waiting:${mode}:any`, socketId);
+    for (const interest of interests.slice(0, 5)) {
+      memQueuePush(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, socketId);
+    }
+  }
+}
+
+async function dequeue(socketId, mode, interests, country) {
+  try {
+    if (country && country !== "?") {
+      await redis.lrem(`waiting:${mode}:${country}:any`, 0, socketId);
+    }
+    await redis.lrem(`waiting:${mode}:any`, 0, socketId);
+    for (const interest of (interests || [])) {
+      await redis.lrem(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, 0, socketId);
+    }
+  } catch {
+    memQueueRemove(`waiting:${mode}:any`, socketId);
+    for (const interest of (interests || [])) {
+      memQueueRemove(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, socketId);
+    }
+  }
+}
+
+// ─── Spy mode queue ─────────────────────────────────────────
+// spy queue: waiting for a question asker to join two chatters
+const spyRooms = {}; // roomId → { a, b, question, spyId? }
+
+async function findSpyMatch() {
+  // Find two text-mode chatters
+  try {
+    const a = await redis.lpop("waiting:spy:any");
+    const b = a ? await redis.lpop("waiting:spy:any") : null;
+    if (a && b && a !== b) return { a, b };
+    if (a) await redis.rpush("waiting:spy:any", a); // put back
+    return null;
+  } catch {
+    const a = memQueuePop("waiting:spy:any");
+    const b = a ? memQueuePop("waiting:spy:any") : null;
+    if (a && b && a !== b) return { a, b };
+    if (a) memQueuePush("waiting:spy:any", a);
+    return null;
   }
 }
 
 // ─── Socket.io handlers ─────────────────────────────────────
-io.on("connection", (socket) => {
+io.on("connection", async (socket) => {
   let pairedWith = null;
   let roomId = null;
   let myInterests = [];
   let myMode = "video";
-  let fingerprintId = null;
+  let myCountry = null;
+  let spyRole = null; // "spy" | "chatter_a" | "chatter_b" | null
 
   updateOnlineCount(1);
 
-  // ── Fingerprint check for banned users ─────────────────
+  // Resolve country from IP
+  const ip = socket.handshake.headers["x-forwarded-for"]?.split(",")[0]?.trim()
+    || socket.handshake.address;
+  const geoInfo = await getCountry(ip);
+  myCountry = geoInfo.country;
+
+  // ── Fingerprint check ───────────────────────────────────
   socket.on("fingerprint", async ({ fpId }) => {
     if (!fpId) return;
-    fingerprintId = fpId;
-    const banned = await redis.get(`fp_ban:${fpId}`);
-    if (banned) {
-      socket.emit("banned", { reason: "You are banned from MiloBolo." });
-      socket.disconnect(true);
-    }
+    try {
+      const banned = await redis.get(`fp_ban:${fpId}`);
+      if (banned) {
+        socket.emit("banned", { reason: "You are banned from MiloBolo." });
+        socket.disconnect(true);
+      }
+    } catch {}
   });
 
-  // ── Matchmaking ────────────────────────────────────────
+  // ── Matchmaking ─────────────────────────────────────────
   socket.on("find_match", async ({ mode = "video", userId = null, interests = [] }) => {
     myMode = mode;
     myInterests = interests;
 
-    // Store socket metadata
-    await redis.set(`socket:${socket.id}`, JSON.stringify({ userId, interests, mode }), "EX", 600);
+    const meta = { userId, interests, mode, country: geoInfo };
+    memSocketMeta[socket.id] = meta;
+    try { await redis.set(`socket:${socket.id}`, JSON.stringify(meta), "EX", 600); } catch {}
 
-    const match = await findMatch(socket.id, mode, interests);
+    const match = await findMatch(socket.id, mode, interests, myCountry);
     if (match) {
       const { waitingId, matchedInterest } = match;
       roomId = uuidv4();
       pairedWith = waitingId;
 
-      await redis.set(`room:${roomId}`, JSON.stringify({ a: socket.id, b: waitingId }), "EX", 3600);
+      try { await redis.set(`room:${roomId}`, JSON.stringify({ a: socket.id, b: waitingId }), "EX", 3600); } catch {}
 
-      // Get peer interests for display
-      const peerMeta = await redis.get(`socket:${waitingId}`);
-      const peerData = peerMeta ? JSON.parse(peerMeta) : {};
+      let peerData = memSocketMeta[waitingId] || {};
+      try {
+        const peerMeta = await redis.get(`socket:${waitingId}`);
+        if (peerMeta) peerData = JSON.parse(peerMeta);
+      } catch {}
 
       socket.join(roomId);
       io.sockets.sockets.get(waitingId)?.join(roomId);
@@ -219,19 +348,115 @@ io.on("connection", (socket) => {
       io.to(socket.id).emit("match_found", {
         roomId, isInitiator: true, peer: waitingId,
         matchedInterest, peerInterests: peerData.interests || [],
+        peerCountry: peerData.country || null,
+        myCountry: geoInfo,
       });
       io.to(waitingId).emit("match_found", {
         roomId, isInitiator: false, peer: socket.id,
         matchedInterest, peerInterests: interests,
+        peerCountry: geoInfo,
+        myCountry: peerData.country || null,
       });
     } else {
-      await enqueue(socket.id, mode, interests);
-      socket.emit("waiting");
+      await enqueue(socket.id, mode, interests, myCountry);
+      socket.emit("waiting", { country: geoInfo });
+    }
+  });
+
+  // ── Spy / Question mode ─────────────────────────────────
+  // Role: "spy" — asks a question, watches two strangers discuss it
+  // Role: "chatter" — gets paired with another chatter, spy watches
+  socket.on("find_spy_match", async ({ role = "chatter", question = "" }) => {
+    myMode = "spy";
+
+    if (role === "spy") {
+      spyRole = "spy";
+      // Spy waits for two chatters to be available
+      const pair = await findSpyMatch();
+      if (pair) {
+        const { a, b } = pair;
+        roomId = uuidv4();
+        spyRooms[roomId] = { a, b, spyId: socket.id, question };
+
+        socket.join(roomId);
+        io.sockets.sockets.get(a)?.join(roomId);
+        io.sockets.sockets.get(b)?.join(roomId);
+
+        const aData = memSocketMeta[a] || {};
+        const bData = memSocketMeta[b] || {};
+
+        io.to(socket.id).emit("spy_match_found", { roomId, question, role: "spy" });
+        io.to(a).emit("spy_match_found", { roomId, question, role: "chatter_a", peer: b, peerCountry: bData.country });
+        io.to(b).emit("spy_match_found", { roomId, question, role: "chatter_b", peer: a, peerCountry: aData.country });
+
+        memSocketMeta[a] = { ...aData, spyRoom: roomId };
+        memSocketMeta[b] = { ...bData, spyRoom: roomId };
+      } else {
+        // Store question and wait
+        memSocketMeta[socket.id] = { ...memSocketMeta[socket.id], pendingSpyQuestion: question };
+        socket.emit("waiting", { role: "spy" });
+        // Try again when chatters arrive
+        try { await redis.set(`spy_waiting:${socket.id}`, question, "EX", 300); } catch {}
+      }
+    } else {
+      spyRole = "chatter";
+      memSocketMeta[socket.id] = { ...memSocketMeta[socket.id], mode: "spy" };
+      // Check if a spy is waiting
+      let spySocketId = null;
+      let spyQuestion = "";
+      try {
+        const keys = await redis.keys("spy_waiting:*");
+        if (keys.length) {
+          spySocketId = keys[0].replace("spy_waiting:", "");
+          spyQuestion = await redis.get(keys[0]) || "";
+          await redis.del(keys[0]);
+        }
+      } catch {
+        // Check memSocketMeta for pending spy
+        for (const [sid, meta] of Object.entries(memSocketMeta)) {
+          if (meta.pendingSpyQuestion !== undefined) {
+            spySocketId = sid;
+            spyQuestion = meta.pendingSpyQuestion;
+            delete memSocketMeta[sid].pendingSpyQuestion;
+            break;
+          }
+        }
+      }
+
+      // Queue as chatter
+      try { await redis.rpush("waiting:spy:any", socket.id); await redis.expire("waiting:spy:any", 300); }
+      catch { memQueuePush("waiting:spy:any", socket.id); }
+
+      const pair = await findSpyMatch();
+      if (pair) {
+        const { a, b } = pair;
+        roomId = uuidv4();
+        const question = spyQuestion || "Discuss anything!";
+        spyRooms[roomId] = { a, b, spyId: spySocketId, question };
+
+        const aData = memSocketMeta[a] || {};
+        const bData = memSocketMeta[b] || {};
+
+        io.sockets.sockets.get(a)?.join(roomId);
+        io.sockets.sockets.get(b)?.join(roomId);
+
+        io.to(a).emit("spy_match_found", { roomId, question, role: "chatter_a", peer: b, peerCountry: bData.country });
+        io.to(b).emit("spy_match_found", { roomId, question, role: "chatter_b", peer: a, peerCountry: aData.country });
+
+        if (spySocketId && io.sockets.sockets.get(spySocketId)) {
+          io.sockets.sockets.get(spySocketId).join(roomId);
+          io.to(spySocketId).emit("spy_match_found", { roomId, question, role: "spy" });
+        }
+      } else {
+        socket.emit("waiting", { role: "chatter" });
+      }
     }
   });
 
   socket.on("cancel_search", async () => {
-    await dequeue(socket.id, myMode, myInterests);
+    await dequeue(socket.id, myMode, myInterests, myCountry);
+    try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
+    try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
     socket.emit("search_cancelled");
   });
 
@@ -245,33 +470,29 @@ io.on("connection", (socket) => {
     io.to(to).emit("e2e_pubkey", { from: socket.id, publicKey });
   });
 
-  // ── Encrypted message ───────────────────────────────────
-  socket.on("message", async ({ roomId: rid, ciphertext, iv, plain }) => {
-    try {
-      await msgLimiter.consume(socket.id);
-    } catch {
+  // ── Message ─────────────────────────────────────────────
+  socket.on("message", async ({ roomId: rid, ciphertext, iv, plain, senderRole }) => {
+    try { await msgLimiter.consume(socket.id); }
+    catch {
       socket.emit("error", { message: "Slow down! Message rate limit exceeded." });
       return;
     }
     if (!rid) return;
-    // ciphertext = E2E encrypted; plain = fallback for text-only when E2E not established
     const payload = ciphertext
-      ? { from: socket.id, ciphertext, iv, ts: Date.now(), encrypted: true }
-      : { from: socket.id, text: (plain || "").slice(0, 500), ts: Date.now(), encrypted: false };
+      ? { from: socket.id, ciphertext, iv, ts: Date.now(), encrypted: true, senderRole: senderRole || null }
+      : { from: socket.id, text: (plain || "").slice(0, 500), ts: Date.now(), encrypted: false, senderRole: senderRole || null };
     socket.to(rid).emit("message", payload);
   });
 
-  // ── Typing indicator ────────────────────────────────────
-  socket.on("typing", ({ roomId: rid, typing }) => {
-    if (rid) socket.to(rid).emit("typing", { from: socket.id, typing });
+  // ── Typing ──────────────────────────────────────────────
+  socket.on("typing", ({ roomId: rid, typing, senderRole }) => {
+    if (rid) socket.to(rid).emit("typing", { from: socket.id, typing, senderRole: senderRole || null });
   });
 
   // ── Reactions ───────────────────────────────────────────
   socket.on("reaction", ({ roomId: rid, emoji }) => {
     const allowed = ["👍","❤️","😂","😮","😢","🔥","👏","💯"];
-    if (rid && allowed.includes(emoji)) {
-      socket.to(rid).emit("reaction", { from: socket.id, emoji });
-    }
+    if (rid && allowed.includes(emoji)) socket.to(rid).emit("reaction", { from: socket.id, emoji });
   });
 
   // ── Friend request ──────────────────────────────────────
@@ -283,11 +504,10 @@ io.on("connection", (socket) => {
     io.to(to).emit("friend_response", { accepted, fromUserId, toUserId });
   });
 
-  // ── Screen share signal ─────────────────────────────────
+  // ── Screen share ────────────────────────────────────────
   socket.on("screen_share_start", ({ roomId: rid }) => {
     socket.to(rid).emit("peer_screen_share", { active: true });
   });
-
   socket.on("screen_share_stop", ({ roomId: rid }) => {
     socket.to(rid).emit("peer_screen_share", { active: false });
   });
@@ -298,10 +518,19 @@ io.on("connection", (socket) => {
       io.to(pairedWith).emit("peer_left");
       socket.leave(roomId);
       io.sockets.sockets.get(pairedWith)?.leave(roomId);
-      if (roomId) await redis.del(`room:${roomId}`);
+      try { if (roomId) await redis.del(`room:${roomId}`); } catch {}
       pairedWith = null;
-      roomId = null;
     }
+    // Clean spy room
+    if (roomId && spyRooms[roomId]) {
+      const room = spyRooms[roomId];
+      io.to(room.a).emit("peer_left");
+      io.to(room.b).emit("peer_left");
+      if (room.spyId) io.to(room.spyId).emit("spy_ended");
+      delete spyRooms[roomId];
+    }
+    roomId = null;
+    spyRole = null;
   });
 
   // ── Report ──────────────────────────────────────────────
@@ -319,10 +548,29 @@ io.on("connection", (socket) => {
   // ── Disconnect ──────────────────────────────────────────
   socket.on("disconnect", async () => {
     updateOnlineCount(-1);
-    await dequeue(socket.id, myMode, myInterests);
-    await redis.del(`socket:${socket.id}`);
+    await dequeue(socket.id, myMode, myInterests, myCountry);
+    try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
+    try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
+    delete memSocketMeta[socket.id];
+    try { await redis.del(`socket:${socket.id}`); } catch {}
+
     if (pairedWith) io.to(pairedWith).emit("peer_left");
-    if (roomId) await redis.del(`room:${roomId}`);
+
+    // Clean spy room on disconnect
+    if (roomId && spyRooms[roomId]) {
+      const room = spyRooms[roomId];
+      if (spyRole === "spy") {
+        io.to(room.a).emit("spy_ended");
+        io.to(room.b).emit("spy_ended");
+      } else {
+        const other = room.a === socket.id ? room.b : room.a;
+        io.to(other).emit("peer_left");
+        if (room.spyId) io.to(room.spyId).emit("spy_ended");
+      }
+      delete spyRooms[roomId];
+    }
+
+    try { if (roomId) await redis.del(`room:${roomId}`); } catch {}
   });
 });
 
