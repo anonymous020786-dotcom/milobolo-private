@@ -1,13 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  swcMinify: true,
   compress: true,
   poweredByHeader: false,
   images: {
-    domains: [
-      "assets.videodownloaders.cloud",
-      "lh3.googleusercontent.com",
+    remotePatterns: [
+      { protocol: "https", hostname: "assets.videodownloaders.cloud" },
+      { protocol: "https", hostname: "lh3.googleusercontent.com" },
     ],
     formats: ["image/avif", "image/webp"],
   },
