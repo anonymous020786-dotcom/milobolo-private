@@ -6,6 +6,8 @@ import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
+import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import ChatIcon from "@mui/icons-material/Chat";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import Layout from "@/components/Layout";
@@ -60,6 +62,25 @@ export default function ChatHistory() {
     setRecords((prev) => prev.filter((r) => r.id !== id));
   };
 
+  const clearAll = async () => {
+    if (!confirm("Delete ALL chat history? This cannot be undone.")) return;
+    await supabase.from("chat_history").delete().eq("user_id", user!.id);
+    setRecords([]);
+    setStats({ total: 0, totalTime: 0, videoChats: 0, textChats: 0 });
+  };
+
+  const exportCsv = () => {
+    const header = "Mode,Duration (s),Messages,Matched Interest,Date";
+    const rows = records.map((r) =>
+      [r.mode, r.duration_seconds, r.message_count, r.matched_interest || "", r.started_at].join(",")
+    );
+    const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "milobolo-history.csv"; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const formatDuration = (s: number) => {
     if (s < 60) return `${s}s`;
     const m = Math.floor(s / 60);
@@ -72,7 +93,19 @@ export default function ChatHistory() {
   return (
     <Layout title="Chat History">
       <Container maxWidth="lg" sx={{ py: 4 }}>
-        <Typography variant="h4" fontWeight={800} mb={4}>Chat History</Typography>
+        <Stack direction="row" justifyContent="space-between" alignItems="center" mb={4} flexWrap="wrap" gap={1}>
+          <Typography variant="h4" fontWeight={800}>Chat History</Typography>
+          {records.length > 0 && (
+            <Stack direction="row" spacing={1}>
+              <Tooltip title="Export as CSV">
+                <IconButton onClick={exportCsv} size="small"><FileDownloadIcon /></IconButton>
+              </Tooltip>
+              <Tooltip title="Clear all history">
+                <IconButton onClick={clearAll} size="small" color="error"><DeleteSweepIcon /></IconButton>
+              </Tooltip>
+            </Stack>
+          )}
+        </Stack>
 
         {/* Stats */}
         <Stack direction={{ xs: "column", sm: "row" }} spacing={2} mb={4}>
