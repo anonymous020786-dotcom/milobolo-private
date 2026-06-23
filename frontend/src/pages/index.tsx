@@ -5,8 +5,10 @@ import Link from "next/link";
 import {
   Box, Typography, Button, TextField, Stack, Chip,
   Autocomplete, Container, Divider, FormControl,
-  InputLabel, Select, MenuItem, Collapse, Tooltip,
+  InputLabel, Select, MenuItem, Collapse, Accordion,
+  AccordionSummary, AccordionDetails,
 } from "@mui/material";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import VideoCallIcon from "@mui/icons-material/VideoCall";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
@@ -62,8 +64,27 @@ export default function Home() {
   return (
     <>
       <Head>
-        <title>MiloBolo — Talk to strangers!</title>
-        <meta name="description" content="Video chat with strangers. Free, anonymous, no registration." />
+        <title>MiloBolo — Free Random Video Chat with Strangers</title>
+        <meta name="description" content="MiloBolo — free, anonymous, end-to-end encrypted random video and text chat. Connect with strangers worldwide instantly. No registration required. Always free." />
+        <meta name="keywords" content="random chat, video chat, stranger chat, omegle alternative, free chat, anonymous chat, milobolo" />
+        <meta property="og:title" content="MiloBolo — Free Random Video Chat" />
+        <meta property="og:description" content="Chat with random strangers via video or text. Free, anonymous, encrypted. No account needed." />
+        <meta property="og:type" content="website" />
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "FAQPage",
+              mainEntity: [
+                { "@type": "Question", name: "Is MiloBolo free?", acceptedAnswer: { "@type": "Answer", text: "Yes — MiloBolo is 100% free forever. No premium tier, no coins, no subscriptions." } },
+                { "@type": "Question", name: "Do I need an account?", acceptedAnswer: { "@type": "Answer", text: "No account needed for video chat, text chat, or spy mode. Registration is optional for chat history and connections." } },
+                { "@type": "Question", name: "Is MiloBolo safe?", acceptedAnswer: { "@type": "Answer", text: "All messages are end-to-end encrypted. No video or audio is stored. Comprehensive reporting and ban tools protect users." } },
+                { "@type": "Question", name: "What age is required?", acceptedAnswer: { "@type": "Answer", text: "MiloBolo is strictly 18+. Age confirmation is required before accessing any chat feature." } },
+              ],
+            }),
+          }}
+        />
       </Head>
 
       <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column", bgcolor: "background.default" }}>
@@ -243,6 +264,32 @@ export default function Home() {
                 sx={{ borderColor: "rgba(255,255,255,0.1)", color: "text.secondary", fontSize: 13 }} />
             ))}
           </Stack>
+        </Container>
+
+        {/* ── FAQ ── */}
+        <Divider sx={{ opacity: 0.07 }} />
+        <Container maxWidth="md" sx={{ py: 6 }}>
+          <Typography variant="h6" fontWeight={700} mb={3} textAlign="center">
+            Frequently Asked Questions
+          </Typography>
+          {[
+            { q: "Is MiloBolo free?", a: "Yes — MiloBolo is 100% free, forever. No premium tier, no coins, no subscriptions. We sustain the platform through non-intrusive advertising." },
+            { q: "Do I need to create an account?", a: "No account needed for any core feature. Video chat, text chat, spy mode, and interest matching all work instantly without registration. Create an optional account only if you want chat history or friend connections." },
+            { q: "Is MiloBolo safe?", a: "MiloBolo encrypts all text messages end-to-end, stores no video or audio, and has comprehensive reporting and fingerprint-based ban tools. Use our safety tips and trust your instincts — click Next any time." },
+            { q: "What is Spy Mode?", a: "Spy Mode lets you ask a question anonymously and watch two strangers discuss it live. You can also join as a stranger and answer someone else's question while a spy watches silently." },
+            { q: "Can I use MiloBolo on my phone?", a: "Yes — MiloBolo is fully mobile-optimised and works on any modern smartphone browser. You can also install it as a PWA (Add to Home Screen) for an app-like experience." },
+            { q: "What age do I need to be?", a: "MiloBolo is strictly for users 18 and older. You must confirm your age before accessing any chat feature." },
+          ].map(({ q, a }) => (
+            <Accordion key={q} elevation={0}
+              sx={{ bgcolor: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)", mb: 1, borderRadius: "8px !important", "&:before": { display: "none" } }}>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Typography variant="body2" fontWeight={600}>{q}</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Typography variant="body2" color="text.secondary" lineHeight={1.8}>{a}</Typography>
+              </AccordionDetails>
+            </Accordion>
+          ))}
         </Container>
 
         {/* ── Footer ── */}

@@ -1,12 +1,16 @@
 import { GetStaticPaths, GetStaticProps } from "next";
+import Head from "next/head";
 import Layout from "@/components/Layout";
 import {
-  Box, Card, CardActionArea, CardContent, Chip, Container,
-  Divider, Grid, Stack, Typography, useTheme,
+  Box, Button, Card, CardActionArea, CardContent, Chip, Container,
+  Divider, Grid, LinearProgress, Stack, Tooltip, Typography, useTheme,
 } from "@mui/material";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import ShareIcon from "@mui/icons-material/Share";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { BLOG_POSTS, type BlogPost, getRelatedPosts } from "@/data/blogPosts";
 
 interface Props {
@@ -25,31 +29,108 @@ export const getStaticProps: GetStaticProps<Props> = ({ params }) => {
   return { props: { post, related: getRelatedPosts(post.slug) } };
 };
 
+function useReadingProgress() {
+  const [progress, setProgress] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      const el = document.documentElement;
+      const total = el.scrollHeight - el.clientHeight;
+      if (total <= 0) return;
+      setProgress(Math.min(100, (el.scrollTop / total) * 100));
+    };
+    window.addEventListener("scroll", update, { passive: true });
+    return () => window.removeEventListener("scroll", update);
+  }, []);
+  return progress;
+}
+
 export default function BlogPost({ post, related }: Props) {
   const theme = useTheme();
+  const progress = useReadingProgress();
+  const [copied, setCopied] = useState(false);
+  const [showTop, setShowTop] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => setShowTop(window.scrollY > 600);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  const share = async () => {
+    const url = typeof window !== "undefined" ? window.location.href : "";
+    if (navigator.share) {
+      await navigator.share({ title: post.title, text: post.excerpt, url });
+    } else {
+      navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const BASE = "https://chat.videodownloaders.cloud";
+  const schema = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: post.title,
+    description: post.excerpt,
+    datePublished: post.date,
+    author: { "@type": "Organization", name: "MiloBolo" },
+    publisher: {
+      "@type": "Organization",
+      name: "MiloBolo",
+      url: BASE,
+    },
+    url: `${BASE}/blog/${post.slug}`,
+    keywords: post.tags.join(", "),
+  };
+
   return (
     <Layout
       title={`${post.title} | MiloBolo Blog`}
       description={post.excerpt}
     >
+      <Head>
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }}
+        />
+      </Head>
+
+      {/* Reading progress bar */}
+      <Box sx={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 1400 }}>
+        <LinearProgress variant="determinate" value={progress} sx={{ height: 3, borderRadius: 0 }} />
+      </Box>
+
       <Container maxWidth="md" sx={{ py: { xs: 4, md: 7 } }}>
-        {/* Back */}
-        <Box
-          component={Link}
-          href="/blog"
-          sx={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 0.5,
-            color: "text.secondary",
-            textDecoration: "none",
-            mb: 3,
-            "&:hover": { color: "primary.main" },
-          }}
-        >
-          <ArrowBackIcon fontSize="small" />
-          <Typography variant="body2">Back to Blog</Typography>
-        </Box>
+        {/* Back + Share */}
+        <Stack direction="row" justifyContent="space-between" alignItems="center" mb={3}>
+          <Box
+            component={Link}
+            href="/blog"
+            sx={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 0.5,
+              color: "text.secondary",
+              textDecoration: "none",
+              "&:hover": { color: "primary.main" },
+            }}
+          >
+            <ArrowBackIcon fontSize="small" />
+            <Typography variant="body2">Back to Blog</Typography>
+          </Box>
+          <Tooltip title={copied ? "Link copied!" : "Share this article"}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<ShareIcon fontSize="small" />}
+              onClick={share}
+              sx={{ borderRadius: 2 }}
+            >
+              {copied ? "Copied!" : "Share"}
+            </Button>
+          </Tooltip>
+        </Stack>
 
         {/* Meta */}
         <Stack direction="row" spacing={1} mb={2} flexWrap="wrap" gap={0.5}>
@@ -159,6 +240,27 @@ export default function BlogPost({ post, related }: Props) {
           </Box>
         )}
       </Container>
+
+      {/* Scroll to top */}
+      {showTop && (
+        <Box
+          sx={{ position: "fixed", bottom: 100, right: 24, zIndex: 1300 }}
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        >
+          <Tooltip title="Back to top">
+            <Box
+              sx={{
+                width: 40, height: 40, borderRadius: "50%",
+                bgcolor: "primary.main", display: "flex", alignItems: "center",
+                justifyContent: "center", cursor: "pointer", boxShadow: 4,
+                "&:hover": { bgcolor: "primary.dark" },
+              }}
+            >
+              <ArrowUpwardIcon sx={{ color: "#fff", fontSize: 20 }} />
+            </Box>
+          </Tooltip>
+        </Box>
+      )}
     </Layout>
   );
 }
