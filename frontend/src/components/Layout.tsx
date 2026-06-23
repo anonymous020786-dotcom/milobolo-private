@@ -1,9 +1,8 @@
 import { ReactNode } from "react";
 import { Box } from "@mui/material";
 import Navbar from "./Navbar";
-import WhatsAppButton from "./WhatsAppButton";
+import FloatingToolbar from "./FloatingToolbar";
 import { DefaultSeo } from "next-seo";
-import { useFeatureFlags } from "@/context/FeatureFlagContext";
 
 interface LayoutProps {
   children: ReactNode;
@@ -13,8 +12,6 @@ interface LayoutProps {
 }
 
 export default function Layout({ children, title, description, noNav }: LayoutProps) {
-  const { isEnabled } = useFeatureFlags();
-
   return (
     <>
       <DefaultSeo
@@ -35,7 +32,7 @@ export default function Layout({ children, title, description, noNav }: LayoutPr
         <Box component="main" sx={{ flex: 1 }}>
           {children}
         </Box>
-        {isEnabled("whatsapp_button") && <WhatsAppButton />}
+        <FloatingToolbar />
       </Box>
     </>
   );

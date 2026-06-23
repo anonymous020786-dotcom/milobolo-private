@@ -6,9 +6,11 @@ import { ThemeProvider, CssBaseline } from "@mui/material";
 import { GoogleReCaptchaProvider } from "react-google-recaptcha-v3";
 import { AuthProvider } from "@/context/AuthContext";
 import { FeatureFlagProvider } from "@/context/FeatureFlagContext";
-import theme from "@/theme";
+import { AppThemeProvider, useAppTheme, buildMuiTheme } from "@/context/ThemeContext";
+import { AccessibilityProvider } from "@/context/AccessibilityContext";
 import Script from "next/script";
 import PWAInstallBanner from "@/components/PWAInstallBanner";
+import "@/styles/accessibility.css";
 
 const GA_ID = process.env.NEXT_PUBLIC_GA_ID;
 const ADSENSE_ID = process.env.NEXT_PUBLIC_ADSENSE_CLIENT_ID;
@@ -18,10 +20,11 @@ declare global {
   interface Window { gtag: (...args: unknown[]) => void; dataLayer: unknown[]; }
 }
 
-export default function App({ Component, pageProps }: AppProps) {
+function ThemedApp({ Component, pageProps }: AppProps) {
+  const { currentDescriptor } = useAppTheme();
+  const muiTheme = buildMuiTheme(currentDescriptor);
   const router = useRouter();
 
-  // Track page views on route change
   useEffect(() => {
     if (!GA_ID) return;
     const handleRouteChange = (url: string) => {
@@ -31,6 +34,22 @@ export default function App({ Component, pageProps }: AppProps) {
     return () => router.events.off("routeChangeComplete", handleRouteChange);
   }, [router.events]);
 
+  return (
+    <ThemeProvider theme={muiTheme}>
+      <CssBaseline />
+      <GoogleReCaptchaProvider reCaptchaKey={RECAPTCHA_KEY}>
+        <AuthProvider>
+          <FeatureFlagProvider>
+            <Component {...pageProps} />
+            <PWAInstallBanner />
+          </FeatureFlagProvider>
+        </AuthProvider>
+      </GoogleReCaptchaProvider>
+    </ThemeProvider>
+  );
+}
+
+export default function App(props: AppProps) {
   return (
     <>
       <Head>
@@ -50,7 +69,7 @@ export default function App({ Component, pageProps }: AppProps) {
         </>
       )}
 
-      {/* Google AdSense — use afterInteractive to avoid data-nscript warning */}
+      {/* Google AdSense */}
       {ADSENSE_ID && !ADSENSE_ID.includes("PLACEHOLDER") && (
         <Script
           src={`https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${ADSENSE_ID}`}
@@ -59,17 +78,11 @@ export default function App({ Component, pageProps }: AppProps) {
         />
       )}
 
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <GoogleReCaptchaProvider reCaptchaKey={RECAPTCHA_KEY}>
-          <AuthProvider>
-            <FeatureFlagProvider>
-              <Component {...pageProps} />
-              <PWAInstallBanner />
-            </FeatureFlagProvider>
-          </AuthProvider>
-        </GoogleReCaptchaProvider>
-      </ThemeProvider>
+      <AccessibilityProvider>
+        <AppThemeProvider>
+          <ThemedApp {...props} />
+        </AppThemeProvider>
+      </AccessibilityProvider>
     </>
   );
 }

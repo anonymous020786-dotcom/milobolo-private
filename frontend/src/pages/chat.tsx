@@ -34,6 +34,7 @@ import SignalCellular0BarIcon from "@mui/icons-material/SignalCellular0Bar";
 import { io, Socket } from "socket.io-client";
 import styles from "@/styles/chat.module.css";
 import AgeGate from "@/components/AgeGate";
+import FloatingToolbar from "@/components/FloatingToolbar";
 import OnlineCounter from "@/components/OnlineCounter";
 import FriendRequestDialog from "@/components/chat/FriendRequestDialog";
 import { useFeatureFlags } from "@/context/FeatureFlagContext";
@@ -1190,6 +1191,8 @@ export default function Chat() {
 
       <Snackbar open={!!snack} autoHideDuration={4000} onClose={() => setSnack("")}
         message={snack} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
+
+      <FloatingToolbar />
     </>
   );
 }

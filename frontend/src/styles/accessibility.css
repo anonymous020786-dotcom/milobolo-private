@@ -1,0 +1,135 @@
+/* ── Accessibility styles applied via body classes ─────────────────────── */
+
+/* High contrast */
+.a11y-high-contrast * { outline: 2px solid currentColor !important; }
+.a11y-high-contrast a, .a11y-high-contrast button { text-decoration: underline !important; }
+
+/* Dyslexia font (via @font-face fallback to system stack with tracking) */
+.a11y-dyslexia * { font-family: "OpenDyslexic", "Comic Sans MS", cursive !important; letter-spacing: 0.08em !important; word-spacing: 0.18em !important; }
+
+/* Bold text */
+.a11y-bold p, .a11y-bold span, .a11y-bold li, .a11y-bold td { font-weight: 700 !important; }
+
+/* Monospace */
+.a11y-monospace * { font-family: "JetBrains Mono", "Fira Code", "Courier New", monospace !important; }
+
+/* Reduce motion */
+.a11y-reduce-motion *, .a11y-reduce-motion *::before, .a11y-reduce-motion *::after {
+  animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important; scroll-behavior: auto !important;
+}
+
+/* Pause animations */
+.a11y-pause-anims * { animation-play-state: paused !important; }
+
+/* No transitions */
+.a11y-no-transitions *, .a11y-no-transitions *::before { transition: none !important; }
+
+/* Focus highlight */
+.a11y-focus-highlight *:focus { outline: 4px solid #FFDD00 !important; outline-offset: 3px !important; }
+
+/* Keyboard nav */
+.a11y-keyboard-nav *:focus-visible { outline: 3px solid #4FC3F7 !important; outline-offset: 4px !important; box-shadow: 0 0 0 6px rgba(79,195,247,0.25) !important; }
+
+/* Big cursor */
+.a11y-big-cursor, .a11y-big-cursor * { cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32'><circle cx='4' cy='4' r='4' fill='black'/></svg>") 4 4, auto !important; }
+
+/* Big buttons */
+.a11y-big-buttons button, .a11y-big-buttons [role="button"] { min-height: 48px !important; min-width: 48px !important; font-size: 1.1em !important; }
+
+/* Underline links */
+.a11y-underline-links a { text-decoration: underline !important; }
+
+/* Highlight links */
+.a11y-highlight-links a { background: rgba(255,221,0,0.22) !important; padding: 0 2px !important; border-radius: 2px !important; }
+
+/* Hide images */
+.a11y-hide-images img, .a11y-hide-images picture, .a11y-hide-images svg:not([aria-hidden]) { opacity: 0 !important; }
+
+/* Text shadow */
+.a11y-text-shadow p, .a11y-text-shadow span, .a11y-text-shadow li { text-shadow: 0 1px 2px rgba(0,0,0,0.55) !important; }
+
+/* Emphasise headings */
+.a11y-emph-headings h1,.a11y-emph-headings h2,.a11y-emph-headings h3,.a11y-emph-headings h4 {
+  text-decoration: underline !important; font-weight: 900 !important;
+}
+
+/* Heading border (highlight) */
+.a11y-heading-border h1,.a11y-heading-border h2,.a11y-heading-border h3,.a11y-heading-border h4 {
+  border-left: 4px solid #6C63FF !important; padding-left: 10px !important;
+}
+
+/* Paragraph highlight on hover */
+.a11y-highlight-para p:hover { background: rgba(108,99,255,0.12) !important; border-radius: 4px !important; }
+
+/* No distractions */
+.a11y-no-distractions [aria-hidden], .a11y-no-distractions .decorative { display: none !important; }
+
+/* Single column */
+.a11y-single-col .MuiGrid-container { flex-direction: column !important; }
+.a11y-single-col .MuiGrid-item { max-width: 100% !important; flex-basis: 100% !important; }
+
+/* Mute colours */
+.a11y-mute-colors { filter: saturate(0.3) !important; }
+
+/* Print mode */
+.a11y-print { background: #fff !important; color: #000 !important; }
+.a11y-print * { background: transparent !important; color: #000 !important; box-shadow: none !important; }
+
+/* No backgrounds */
+.a11y-no-bg { background-image: none !important; }
+.a11y-no-bg * { background-image: none !important; }
+
+/* Break words */
+.a11y-break-words * { word-break: break-word !important; overflow-wrap: anywhere !important; }
+
+/* Sentence spacing */
+.a11y-sentence-spacing p { word-spacing: 0.16em !important; }
+
+/* Sticky nav */
+.a11y-sticky-nav header, .a11y-sticky-nav nav { position: sticky !important; top: 0 !important; z-index: 999 !important; }
+
+/* Skip link */
+.a11y-skip-link::before {
+  content: "Skip to content";
+  position: fixed; top: 8px; left: 8px; z-index: 9999;
+  padding: 6px 14px; background: #6C63FF; color: #fff;
+  border-radius: 6px; font-weight: 700; font-size: 13px;
+  transform: translateY(-120%); transition: transform 0.2s;
+}
+.a11y-skip-link:focus-within::before { transform: translateY(0); }
+
+/* Instant tooltips */
+.a11y-instant-tooltip .MuiTooltip-popper { transition-delay: 0ms !important; }
+
+/* Captions on icon buttons */
+.a11y-captions button[aria-label]::after {
+  content: attr(aria-label);
+  display: block; font-size: 9px; margin-top: 1px;
+  white-space: nowrap; color: currentColor; opacity: 0.65;
+}
+
+/* Dark overlay (periphery dim) */
+.a11y-dark-overlay::after {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none; z-index: 8888;
+  background: radial-gradient(ellipse 60% 40% at 50% 50%, transparent 60%, rgba(0,0,0,0.65) 100%);
+}
+
+/* Reading progress bar */
+.a11y-progress-bar::before {
+  content: "";
+  position: fixed; top: 0; left: 0; z-index: 9999;
+  height: 3px; background: #6C63FF;
+  width: calc(var(--scroll-progress, 0) * 1%);
+  transition: width 0.15s;
+}
+
+/* Slow scroll */
+.a11y-slow-scroll { scroll-behavior: smooth; }
+
+/* CSS variables applied by JS */
+body { font-size: var(--a11y-font-size, 16px); }
+p, li, td, span { line-height: var(--a11y-line-height, 1.6) !important; }
+p, li { word-spacing: var(--a11y-word-spacing, 0px) !important; letter-spacing: var(--a11y-letter-spacing, 0px) !important; }
+p + p { margin-top: var(--a11y-paragraph-spacing, 0px) !important; }
