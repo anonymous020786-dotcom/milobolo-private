@@ -10,6 +10,8 @@ import { AppThemeProvider, useAppTheme, buildMuiTheme } from "@/context/ThemeCon
 import { AccessibilityProvider } from "@/context/AccessibilityContext";
 import Script from "next/script";
 import PWAInstallBanner from "@/components/PWAInstallBanner";
+import CookieConsent from "@/components/CookieConsent";
+import WelcomeModal from "@/components/WelcomeModal";
 import "@/styles/accessibility.css";
 
 const GA_ID = process.env.NEXT_PUBLIC_GA_ID;
@@ -42,6 +44,8 @@ function ThemedApp({ Component, pageProps }: AppProps) {
           <FeatureFlagProvider>
             <Component {...pageProps} />
             <PWAInstallBanner />
+            <CookieConsent />
+            <WelcomeModal />
           </FeatureFlagProvider>
         </AuthProvider>
       </GoogleReCaptchaProvider>

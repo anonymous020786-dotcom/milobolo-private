@@ -115,6 +115,82 @@ app.get("/api/online-count", async (req, res) => {
   }
 });
 
+// ─── Contact form ────────────────────────────────────────────
+app.post("/api/contact", async (req, res) => {
+  const { name, email, subject, message, recaptchaToken } = req.body || {};
+  if (!name || !email || !message) return res.status(400).json({ error: "Missing required fields." });
+  if (typeof email !== "string" || !email.includes("@")) return res.status(400).json({ error: "Invalid email." });
+
+  // reCAPTCHA verification (skip in dev)
+  const siteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || "";
+  const isDevKey = !siteKey || siteKey.includes("PLACEHOLDER") || siteKey === "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MmuKj8bi";
+  if (!isDevKey && recaptchaToken && recaptchaToken !== "dev-skip") {
+    try {
+      const resp = await fetch(
+        `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`,
+        { method: "POST" }
+      );
+      const data = await resp.json();
+      if (!data.success || data.score < 0.5) return res.status(403).json({ error: "reCAPTCHA verification failed." });
+    } catch {}
+  }
+
+  const adminEmail = process.env.SMTP_USER;
+  const contactEmail = process.env.CONTACT_EMAIL || adminEmail;
+  if (!adminEmail) return res.status(503).json({ error: "Email service not configured." });
+
+  try {
+    const { createTransport } = require("nodemailer");
+    const transporter = createTransport({
+      host: process.env.SMTP_HOST || "smtp.hostinger.com",
+      port: parseInt(process.env.SMTP_PORT || "587"),
+      secure: process.env.SMTP_SECURE === "true",
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+
+    await transporter.sendMail({
+      from: `"MiloBolo Contact" <${adminEmail}>`,
+      to: contactEmail,
+      replyTo: `"${name}" <${email}>`,
+      subject: `[MiloBolo Contact] ${subject || "New message from " + name}`,
+      html: `
+        <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#0f0f0f;color:#fff;border-radius:12px;">
+          <h2 style="color:#6C63FF;">New Contact Message</h2>
+          <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
+            <tr><td style="padding:8px;color:#999;width:80px;">Name</td><td style="padding:8px;">${name}</td></tr>
+            <tr><td style="padding:8px;color:#999;">Email</td><td style="padding:8px;"><a href="mailto:${email}" style="color:#6C63FF;">${email}</a></td></tr>
+            <tr><td style="padding:8px;color:#999;">Subject</td><td style="padding:8px;">${subject || "(none)"}</td></tr>
+          </table>
+          <div style="background:#1a1a2e;border-radius:8px;padding:20px;">
+            <p style="margin:0;line-height:1.7;white-space:pre-wrap;">${message.slice(0, 2000)}</p>
+          </div>
+          <p style="font-size:12px;color:#666;margin-top:16px;">Sent from MiloBolo contact form • ${new Date().toISOString()}</p>
+        </div>
+      `,
+    });
+
+    // Auto-reply to sender
+    await transporter.sendMail({
+      from: `"MiloBolo" <${adminEmail}>`,
+      to: email,
+      subject: "We received your message — MiloBolo",
+      html: `
+        <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#0f0f0f;color:#fff;border-radius:12px;">
+          <h2 style="color:#6C63FF;">Thanks, ${name}!</h2>
+          <p style="line-height:1.7;">We received your message and will get back to you within 48 hours.</p>
+          <p style="line-height:1.7;color:#999;">Your message: <em>${message.slice(0, 200)}${message.length > 200 ? "…" : ""}</em></p>
+          <p style="font-size:12px;color:#666;margin-top:24px;">MiloBolo — Free Random Chat Forever</p>
+        </div>
+      `,
+    });
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Contact send error:", err.message);
+    res.status(500).json({ error: "Failed to send message. Please try again later." });
+  }
+});
+
 app.get("/health", (_, res) => res.json({ status: "ok", timestamp: Date.now() }));
 
 // ─── Socket.io rate limiters ────────────────────────────────
