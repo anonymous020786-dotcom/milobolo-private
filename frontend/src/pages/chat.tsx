@@ -6,7 +6,8 @@ import Head from "next/head";
 import {
   Box, Typography, Button, TextField, IconButton, Chip,
   Tooltip, CircularProgress, Snackbar, Stack, Dialog, DialogTitle,
-  DialogContent, DialogActions, MenuItem, Select, Paper, Divider,
+  DialogContent, DialogActions, MenuItem, Select, Paper, Fade,
+  useMediaQuery, useTheme, LinearProgress,
 } from "@mui/material";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import VideocamOffIcon from "@mui/icons-material/VideocamOff";
@@ -23,6 +24,13 @@ import BlurOffIcon from "@mui/icons-material/BlurOff";
 import EmojiEmotionsIcon from "@mui/icons-material/EmojiEmotions";
 import CallIcon from "@mui/icons-material/Call";
 import CallEndIcon from "@mui/icons-material/CallEnd";
+import FullscreenIcon from "@mui/icons-material/Fullscreen";
+import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import SignalCellularAltIcon from "@mui/icons-material/SignalCellularAlt";
+import SignalCellular2BarIcon from "@mui/icons-material/SignalCellular2Bar";
+import SignalCellular0BarIcon from "@mui/icons-material/SignalCellular0Bar";
 import { io, Socket } from "socket.io-client";
 import styles from "@/styles/chat.module.css";
 import AgeGate from "@/components/AgeGate";
@@ -39,13 +47,9 @@ import {
 import { supabase } from "@/lib/supabase";
 
 type ChatState = "idle" | "waiting" | "connected" | "ended";
+type Quality = "good" | "fair" | "poor" | null;
 
-interface GeoInfo {
-  country: string;
-  countryName: string;
-  flag: string;
-}
-
+interface GeoInfo { country: string; countryName: string; flag: string; }
 interface Message {
   id: string;
   from: "me" | "peer" | "system";
@@ -65,9 +69,20 @@ const ICE = [
 ];
 
 const REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👏", "💯"];
+const MAX_MSG = 500;
+
+function fmtDuration(s: number) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
 
 export default function Chat() {
   const router = useRouter();
+  const muiTheme = useTheme();
+  const isMobile = useMediaQuery(muiTheme.breakpoints.down("md"));
   const { isEnabled } = useFeatureFlags();
   const { user, profile } = useAuth();
   const fpId = useFingerprint();
@@ -77,6 +92,7 @@ export default function Chat() {
     ? (router.query.interests as string).split(",").filter(Boolean)
     : [];
 
+  // ── state ────────────────────────────────────────────────
   const [state, setState] = useState<ChatState>("idle");
   const [messages, setMessages] = useState<Message[]>([]);
   const [text, setText] = useState("");
@@ -104,13 +120,22 @@ export default function Chat() {
   const [showBgMenu, setShowBgMenu] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
   const [strangerLabel, setStrangerLabel] = useState("Stranger");
+  const [chatDuration, setChatDuration] = useState(0);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [nextCooldown, setNextCooldown] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [quality, setQuality] = useState<Quality>(null);
+  const [connected, setConnected] = useState(false); // socket connected
+  const [showMobileChat, setShowMobileChat] = useState(false); // mobile: show text panel
 
+  // ── refs ─────────────────────────────────────────────────
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const messagesBoxRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const e2eRef = useRef<E2ESession | null>(null);
@@ -119,43 +144,128 @@ export default function Chat() {
   const roomIdRef = useRef<string>("");
   const msgCountRef = useRef(0);
   const matchedInterestRef = useRef<string | null>(null);
+  const qualityTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { activate: activateBg } = useVirtualBackground(localVideoRef);
+  const isConnected = state === "connected";
+  const isWaiting = state === "waiting";
+
+  // ── scroll handler ───────────────────────────────────────
+  const handleMsgScroll = () => {
+    const el = messagesBoxRef.current;
+    if (!el) return;
+    setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 120);
+  };
+
+  const scrollToBottom = () => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    setShowScrollBtn(false);
+  };
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, peerTyping]);
+    if (!showScrollBtn) {
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, peerTyping, showScrollBtn]);
 
+  // ── chat timer ───────────────────────────────────────────
+  useEffect(() => {
+    if (!isConnected) { setChatDuration(0); return; }
+    const id = setInterval(() => setChatDuration((d) => d + 1), 1000);
+    return () => clearInterval(id);
+  }, [isConnected]);
+
+  // ── fullscreen change listener ───────────────────────────
+  useEffect(() => {
+    const handler = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", handler);
+    return () => document.removeEventListener("fullscreenchange", handler);
+  }, []);
+
+  // ── WebRTC quality stats ─────────────────────────────────
+  useEffect(() => {
+    if (!isConnected || mode !== "video") { setQuality(null); return; }
+    qualityTimer.current = setInterval(async () => {
+      if (!pcRef.current) return;
+      try {
+        const stats = await pcRef.current.getStats();
+        stats.forEach((report) => {
+          if (report.type === "inbound-rtp" && report.kind === "video") {
+            const lost = (report as any).packetsLost || 0;
+            const received = (report as any).packetsReceived || 1;
+            const loss = lost / (lost + received);
+            setQuality(loss < 0.02 ? "good" : loss < 0.1 ? "fair" : "poor");
+          }
+        });
+      } catch {}
+    }, 5000);
+    return () => { if (qualityTimer.current) clearInterval(qualityTimer.current); };
+  }, [isConnected, mode]);
+
+  // ── notification permission ──────────────────────────────
+  useEffect(() => {
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }, []);
+
+  // ── fingerprint ──────────────────────────────────────────
   useEffect(() => {
     if (fpId && socketRef.current) socketRef.current.emit("fingerprint", { fpId });
   }, [fpId]);
 
+  // ── PWA service worker ───────────────────────────────────
   useEffect(() => {
     if ("serviceWorker" in navigator && isEnabled("pwa")) {
       navigator.serviceWorker.register("/sw.js").catch(() => {});
     }
   }, [isEnabled]);
 
+  // ── disconnect sound ─────────────────────────────────────
+  const playDisconnectSound = useCallback(() => {
+    try {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(440, ctx.currentTime);
+      osc.frequency.setValueAtTime(330, ctx.currentTime + 0.1);
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+      osc.start(); osc.stop(ctx.currentTime + 0.4);
+    } catch {}
+  }, []);
+
+  const playMatchSound = useCallback(() => {
+    try {
+      const ctx = new AudioContext();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(520, ctx.currentTime);
+      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.12);
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      osc.start(); osc.stop(ctx.currentTime + 0.5);
+    } catch {}
+  }, []);
+
+  // ── cleanup ──────────────────────────────────────────────
   const cleanup = useCallback(() => {
-    pcRef.current?.close();
-    pcRef.current = null;
+    pcRef.current?.close(); pcRef.current = null;
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
     screenStreamRef.current?.getTracks().forEach((t) => t.stop());
     screenStreamRef.current = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
-    e2eRef.current = null;
-    sharedKeyRef.current = null;
-    setE2eReady(false);
-    setSharingScreen(false);
-    setPeerSharingScreen(false);
-    setPeerTyping(false);
-    setMatchedInterest(null);
-    matchedInterestRef.current = null;
-    setPeerCountry(null);
-    setStrangerLabel("Stranger");
-    setVoiceActive(false);
+    e2eRef.current = null; sharedKeyRef.current = null;
+    setE2eReady(false); setSharingScreen(false); setPeerSharingScreen(false);
+    setPeerTyping(false); setMatchedInterest(null); matchedInterestRef.current = null;
+    setPeerCountry(null); setStrangerLabel("Stranger"); setVoiceActive(false);
+    setQuality(null); setShowReactions(false);
   }, []);
 
   const saveHistory = useCallback(async (rid: string, mc: number, mi: string | null) => {
@@ -163,8 +273,7 @@ export default function Chat() {
     const duration = sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0;
     await supabase.from("chat_history").insert({
       user_id: user.id, mode, room_id: rid,
-      duration_seconds: duration, message_count: mc,
-      matched_interest: mi,
+      duration_seconds: duration, message_count: mc, matched_interest: mi,
       started_at: new Date(sessionStart || Date.now()).toISOString(),
       ended_at: new Date().toISOString(),
     });
@@ -180,13 +289,13 @@ export default function Chat() {
       if (localVideoRef.current) localVideoRef.current.srcObject = stream;
       return stream;
     } catch {
-      setSnack("Camera/mic access denied. Check browser permissions.");
+      setSnack("Camera/mic access denied. Check browser permissions and try again.");
       return null;
     }
   }, [mode]);
 
   const createPeerConnection = useCallback((isInitiator: boolean) => {
-    const pc = new RTCPeerConnection({ iceServers: ICE });
+    const pc = new RTCPeerConnection({ iceServers: ICE, iceTransportPolicy: "all" });
     pcRef.current = pc;
     localStreamRef.current?.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current!));
 
@@ -195,28 +304,25 @@ export default function Chat() {
     };
     pc.onicecandidate = (e) => {
       if (e.candidate && socketRef.current && peerIdRef.current) {
-        socketRef.current.emit("signal", {
-          to: peerIdRef.current,
-          signal: { type: "candidate", candidate: e.candidate },
-        });
+        socketRef.current.emit("signal", { to: peerIdRef.current, signal: { type: "candidate", candidate: e.candidate } });
       }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") setSnack("Connection failed. Click New to try again.");
+      if (pc.connectionState === "failed") {
+        setSnack("Connection poor — trying ICE restart…");
+        pc.restartIce();
+      }
     };
 
     if (isInitiator) {
-      pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: mode === "video" })
+      pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: mode === "video" || voiceActive })
         .then((o) => pc.setLocalDescription(o))
         .then(() => {
-          socketRef.current?.emit("signal", {
-            to: peerIdRef.current,
-            signal: { type: "offer", sdp: pc.localDescription },
-          });
+          socketRef.current?.emit("signal", { to: peerIdRef.current, signal: { type: "offer", sdp: pc.localDescription } });
         });
     }
     return pc;
-  }, [mode]);
+  }, [mode, voiceActive]);
 
   const startE2E = useCallback(async () => {
     if (!isEnabled("e2e_encryption")) return;
@@ -225,31 +331,26 @@ export default function Chat() {
     socketRef.current?.emit("e2e_pubkey", { to: peerIdRef.current, publicKey: session.publicKeyB64 });
   }, [isEnabled]);
 
-  const playMatchSound = useCallback(() => {
-    try {
-      const ctx = new AudioContext();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(520, ctx.currentTime);
-      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.12);
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.5);
-    } catch {}
-  }, []);
-
-  // ── Main socket setup ──────────────────────────────────────
+  // ── socket setup ─────────────────────────────────────────
   useEffect(() => {
-    const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL || "", {
+    const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000", {
       transports: ["websocket"],
+      reconnection: true,
+      reconnectionAttempts: 8,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 8000,
     });
     socketRef.current = socket;
 
-    if (fpId) socket.emit("fingerprint", { fpId });
+    socket.on("connect", () => {
+      setConnected(true);
+      if (fpId) socket.emit("fingerprint", { fpId });
+    });
+    socket.on("disconnect", () => setConnected(false));
+    socket.on("reconnect", () => {
+      setConnected(true);
+      setSnack("Reconnected to server.");
+    });
 
     socket.on("banned", ({ reason }) => {
       setSnack(reason);
@@ -272,16 +373,30 @@ export default function Chat() {
       msgCountRef.current = 0;
       matchedInterestRef.current = mi;
       setMatchedInterest(mi);
+      if (isMobile) setShowMobileChat(false); // show video first on mobile
+
       if (pc) {
         setPeerCountry(pc);
         setStrangerLabel(`Stranger ${pc.flag}`);
       }
       if (mc) setMyGeo(mc);
 
-      const sysMsg = mi
+      // Browser notification if tab is hidden
+      if (typeof document !== "undefined" && document.hidden) {
+        try {
+          if (Notification.permission === "granted") {
+            new Notification("MiloBolo — Stranger connected!", {
+              body: mi ? `You both like ${mi}. Say hi!` : "You are now chatting with a random stranger.",
+              icon: "/icons/icon-192.png",
+            });
+          }
+        } catch {}
+      }
+
+      const sysText = mi
         ? `You're now chatting with a random stranger. You both like ${mi}. Say hi!`
         : `You're now chatting with a random stranger${pc ? ` from ${pc.flag} ${pc.countryName}` : ""}. Say hi!`;
-      setMessages([{ id: "sys-0", from: "system", text: sysMsg, ts: Date.now(), encrypted: false }]);
+      setMessages([{ id: "sys-0", from: "system", text: sysText, ts: Date.now(), encrypted: false }]);
 
       if (mode === "video") createPeerConnection(isInitiator);
       await startE2E();
@@ -296,7 +411,6 @@ export default function Chat() {
 
     socket.on("signal", async ({ from, signal }) => {
       if (!pcRef.current) {
-        // Incoming call on text mode (voice toggle)
         if (signal.type === "offer") {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }).catch(() => null);
           if (!stream) return;
@@ -307,7 +421,7 @@ export default function Chat() {
           await pc.setLocalDescription(answer);
           socket.emit("signal", { to: from, signal: { type: "answer", sdp: pc.localDescription } });
           setVoiceActive(true);
-          setSnack("📞 Incoming voice call accepted.");
+          setSnack("📞 Voice call accepted.");
         }
         return;
       }
@@ -329,20 +443,14 @@ export default function Chat() {
         try { decoded = await decryptMessage(sharedKeyRef.current, ciphertext); }
         catch { decoded = "[could not decrypt]"; }
       }
-      setMessages((prev) => [
-        ...prev,
+      setMessages((prev) => [...prev,
         { id: `${ts}-${Math.random()}`, from: "peer", text: decoded, ts, encrypted: !!encrypted },
       ]);
       msgCountRef.current += 1;
     });
 
     socket.on("typing", ({ typing }) => setPeerTyping(typing));
-
-    socket.on("reaction", ({ emoji }) => {
-      setPeerReaction(emoji);
-      setTimeout(() => setPeerReaction(null), 2500);
-    });
-
+    socket.on("reaction", ({ emoji }) => { setPeerReaction(emoji); setTimeout(() => setPeerReaction(null), 2500); });
     socket.on("peer_screen_share", ({ active }) => setPeerSharingScreen(active));
 
     socket.on("friend_request", ({ from, fromUserId, fromName }) => {
@@ -359,6 +467,7 @@ export default function Chat() {
     });
 
     socket.on("peer_left", async () => {
+      playDisconnectSound();
       setState("ended");
       setMessages((prev) => [...prev, {
         id: "sys-end", from: "system",
@@ -385,20 +494,22 @@ export default function Chat() {
     setMessages([]);
     setRoomId(""); setPeerId(""); peerIdRef.current = ""; roomIdRef.current = "";
     socketRef.current?.emit("find_match", {
-      mode,
-      userId: user?.id || null,
+      mode, userId: user?.id || null,
       interests: isEnabled("interest_matching") ? interests : [],
     });
   }, [mode, user, interests, isEnabled, getLocalStream]);
 
   const handleNext = useCallback(async () => {
+    if (nextCooldown) return;
+    setNextCooldown(true);
+    setTimeout(() => setNextCooldown(false), 2000);
     await saveHistory(roomIdRef.current, msgCountRef.current, matchedInterestRef.current);
     cleanup();
     setState("idle");
     setMessages([]);
     socketRef.current?.emit("next");
     setTimeout(() => startSearch(), 300);
-  }, [cleanup, startSearch, saveHistory]);
+  }, [nextCooldown, cleanup, startSearch, saveHistory]);
 
   const handleStop = useCallback(async () => {
     await saveHistory(roomIdRef.current, msgCountRef.current, matchedInterestRef.current);
@@ -409,7 +520,7 @@ export default function Chat() {
     socketRef.current?.emit("next");
   }, [cleanup, saveHistory]);
 
-  // Keyboard shortcuts — after handleStop/handleNext to avoid TDZ
+  // Keyboard shortcuts — after handleStop/handleNext
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -421,11 +532,9 @@ export default function Chat() {
     return () => window.removeEventListener("keydown", handler);
   }, [handleStop, handleNext]);
 
-  // Auto-start on page load
+  // Auto-start
   useEffect(() => {
-    if (router.isReady) {
-      setTimeout(() => startSearch(), 300);
-    }
+    if (router.isReady) setTimeout(() => startSearch(), 300);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router.isReady]);
 
@@ -439,14 +548,22 @@ export default function Chat() {
     setCamOn((v) => !v);
   };
 
+  const toggleFullscreen = async () => {
+    const el = remoteVideoRef.current?.closest(".video-container") as HTMLElement || remoteVideoRef.current;
+    if (!el) return;
+    if (!document.fullscreenElement) {
+      await el.requestFullscreen().catch(() => {});
+    } else {
+      await document.exitFullscreen().catch(() => {});
+    }
+  };
+
   const toggleVoice = useCallback(async () => {
     if (voiceActive) {
       localStreamRef.current?.getAudioTracks().forEach((t) => t.stop());
-      pcRef.current?.close();
-      pcRef.current = null;
+      pcRef.current?.close(); pcRef.current = null;
       localStreamRef.current = null;
       setVoiceActive(false);
-      setSnack("Voice call ended.");
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
@@ -454,9 +571,7 @@ export default function Chat() {
         createPeerConnection(true);
         setVoiceActive(true);
         setSnack("🎙️ Voice call starting…");
-      } catch {
-        setSnack("Mic access denied.");
-      }
+      } catch { setSnack("Mic access denied."); }
     }
   }, [voiceActive, createPeerConnection]);
 
@@ -497,6 +612,7 @@ export default function Chat() {
   };
 
   const handleTyping = (val: string) => {
+    if (val.length > MAX_MSG) return;
     setText(val);
     if (!isTyping) {
       setIsTyping(true);
@@ -524,11 +640,9 @@ export default function Chat() {
       payload = { ...payload, plain, encrypted: false };
     }
     socketRef.current?.emit("message", payload);
-
-    setMessages((prev) => [...prev, {
-      id: `${Date.now()}-me`, from: "me", text: plain, ts: Date.now(),
-      encrypted: isEnabled("e2e_encryption"),
-    }]);
+    setMessages((prev) => [...prev,
+      { id: `${Date.now()}-me`, from: "me", text: plain, ts: Date.now(), encrypted: isEnabled("e2e_encryption") },
+    ]);
     msgCountRef.current += 1;
   }, [text, roomId, isEnabled]);
 
@@ -567,8 +681,21 @@ export default function Chat() {
     setSnack("Report submitted. Thank you.");
   };
 
-  const isConnected = state === "connected";
-  const isWaiting = state === "waiting";
+  const copyTranscript = () => {
+    const lines = messages.map((m) => {
+      if (m.from === "system") return `--- ${m.text} ---`;
+      return `${m.from === "me" ? "You" : strangerLabel}: ${m.text}`;
+    }).join("\n");
+    navigator.clipboard.writeText(lines).then(() => setSnack("Chat copied to clipboard.")).catch(() => {});
+  };
+
+  // ── Quality icon ─────────────────────────────────────────
+  const QualityIcon = () => {
+    if (!quality) return null;
+    const color = quality === "good" ? "#4CAF50" : quality === "fair" ? "#FF9800" : "#f44336";
+    const Icon = quality === "good" ? SignalCellularAltIcon : quality === "fair" ? SignalCellular2BarIcon : SignalCellular0BarIcon;
+    return <Tooltip title={`Connection: ${quality}`}><Icon sx={{ fontSize: 16, color }} /></Tooltip>;
+  };
 
   // ─── Render ────────────────────────────────────────────────
   return (
@@ -576,23 +703,26 @@ export default function Chat() {
       <Head><title>MiloBolo — {mode === "video" ? "Video" : "Text"} Chat</title></Head>
       <AgeGate />
 
-      <Box sx={{ height: "100vh", display: "flex", flexDirection: "column", bgcolor: "background.default", overflow: "hidden" }}>
+      <Box sx={{
+        height: "100dvh",
+        display: "flex", flexDirection: "column",
+        bgcolor: "background.default", overflow: "hidden",
+      }}>
 
-        {/* ── Top bar (Omegle-style) ── */}
+        {/* ── Top bar ── */}
         <Box sx={{
           flexShrink: 0,
           borderBottom: "1px solid rgba(255,255,255,0.08)",
           bgcolor: "background.paper",
-          px: 2, py: 0,
+          px: { xs: 1, md: 2 }, py: 0,
           display: "flex", alignItems: "stretch",
         }}>
-          {/* Logo */}
           <Typography
-            fontWeight={900} fontSize={18}
+            fontWeight={900} fontSize={17}
             onClick={() => router.push("/")}
             sx={{
-              cursor: "pointer", pr: 3, mr: 1,
-              display: "flex", alignItems: "center",
+              cursor: "pointer", pr: { xs: 1.5, md: 3 }, mr: 0.5,
+              display: "flex", alignItems: "center", flexShrink: 0,
               background: "linear-gradient(135deg,#6C63FF,#FF6584)",
               WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
               borderRight: "1px solid rgba(255,255,255,0.08)",
@@ -604,29 +734,34 @@ export default function Chat() {
           {[
             { label: "Video", val: "video", path: "/camera-test?mode=video" },
             { label: "Text", val: "text", path: "/chat?mode=text" },
-            { label: "Spy (beta)", val: "spy", path: "/spy" },
+            { label: "Spy", val: "spy", path: "/spy" },
           ].map((tab) => (
-            <Box
-              key={tab.val}
-              onClick={() => router.push(tab.path)}
-              sx={{
-                px: 2.5, py: 1.5, cursor: "pointer", fontSize: 14, fontWeight: 500,
-                color: mode === tab.val ? "primary.main" : "text.secondary",
-                borderBottom: mode === tab.val ? "2px solid #6C63FF" : "2px solid transparent",
-                mb: "-1px",
-                "&:hover": { color: "text.primary" },
-                transition: "color 0.15s",
-              }}>
-              {tab.label}
-            </Box>
+            <Box key={tab.val} onClick={() => router.push(tab.path)} sx={{
+              px: { xs: 1.5, md: 2.5 }, py: 1.5, cursor: "pointer",
+              fontSize: { xs: 12, md: 14 }, fontWeight: 500,
+              color: mode === tab.val ? "primary.main" : "text.secondary",
+              borderBottom: mode === tab.val ? "2px solid #6C63FF" : "2px solid transparent",
+              mb: "-1px", "&:hover": { color: "text.primary" }, transition: "color 0.15s",
+            }}>{tab.label}</Box>
           ))}
 
           <Box sx={{ flex: 1 }} />
 
-          {/* Online count */}
-          <Box sx={{ display: "flex", alignItems: "center", pr: 1 }}>
-            <OnlineCounter />
-          </Box>
+          {/* Timer */}
+          {isConnected && (
+            <Box sx={{ display: "flex", alignItems: "center", px: 1 }}>
+              <Typography variant="caption" sx={{ fontFamily: "monospace", color: "text.secondary", fontSize: 12 }}>
+                {fmtDuration(chatDuration)}
+              </Typography>
+            </Box>
+          )}
+
+          {/* Quality */}
+          {mode === "video" && (
+            <Box sx={{ display: "flex", alignItems: "center", px: 0.5 }}>
+              <QualityIcon />
+            </Box>
+          )}
 
           {/* E2E badge */}
           {e2eReady && (
@@ -636,15 +771,39 @@ export default function Chat() {
                 sx={{ bgcolor: "rgba(76,175,80,0.1)", color: "success.main", border: "1px solid rgba(76,175,80,0.3)", height: 20, fontSize: 10 }} />
             </Box>
           )}
+
+          {/* Connection indicator */}
+          {!connected && (
+            <Box sx={{ display: "flex", alignItems: "center", px: 1 }}>
+              <Chip label="Reconnecting…" size="small" color="warning" sx={{ height: 20, fontSize: 10 }} />
+            </Box>
+          )}
+
+          {/* Online count */}
+          <Box sx={{ display: "flex", alignItems: "center", pr: 1 }}>
+            <OnlineCounter />
+          </Box>
         </Box>
 
-        {/* ── Main chat area ── */}
-        <Box sx={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {/* ── Main area — responsive layout ── */}
+        <Box sx={{
+          flex: 1, overflow: "hidden",
+          display: "flex",
+          flexDirection: mode === "video"
+            ? (isMobile ? "column" : "row")
+            : "row",
+        }}>
 
-          {/* ── Left: Video panel (video mode only) ── */}
-          {mode === "video" && (
-            <Box sx={{ flex: "0 0 65%", display: "flex", flexDirection: "column", borderRight: "1px solid rgba(255,255,255,0.07)" }}>
-
+          {/* ── VIDEO PANEL ── */}
+          {mode === "video" && (!isMobile || !showMobileChat) && (
+            <Box className="video-container" sx={{
+              flexShrink: 0,
+              width: isMobile ? "100%" : "65%",
+              height: isMobile ? "55%" : "100%",
+              display: "flex", flexDirection: "column",
+              borderRight: isMobile ? "none" : "1px solid rgba(255,255,255,0.07)",
+              borderBottom: isMobile ? "1px solid rgba(255,255,255,0.07)" : "none",
+            }}>
               {/* Remote video */}
               <Box sx={{ flex: 1, position: "relative", bgcolor: "#050508", overflow: "hidden" }}>
                 <video ref={remoteVideoRef} autoPlay playsInline className={styles.remoteVideo} />
@@ -660,8 +819,8 @@ export default function Chat() {
                 {/* Peer reaction float */}
                 {peerReaction && (
                   <Box sx={{
-                    position: "absolute", top: "40%", left: "50%", transform: "translate(-50%,-50%)",
-                    fontSize: 64, pointerEvents: "none",
+                    position: "absolute", top: "40%", left: "50%",
+                    transform: "translate(-50%,-50%)", fontSize: 64, pointerEvents: "none",
                     animation: "fadeUp 2.5s ease forwards",
                     "@keyframes fadeUp": {
                       "0%": { opacity: 1, transform: "translate(-50%,-50%) scale(1)" },
@@ -672,27 +831,34 @@ export default function Chat() {
 
                 {/* Screen share badge */}
                 {peerSharingScreen && (
-                  <Box sx={{ position: "absolute", top: 10, right: 10 }}>
+                  <Box sx={{ position: "absolute", top: 10, right: 50 }}>
                     <Chip label="Sharing screen" size="small" color="warning" sx={{ fontSize: 11 }} />
                   </Box>
                 )}
 
-                {/* Overlay when not connected */}
+                {/* Fullscreen button */}
+                <Box sx={{ position: "absolute", top: 10, right: 10 }}>
+                  <IconButton size="small" onClick={toggleFullscreen}
+                    sx={{ bgcolor: "rgba(0,0,0,0.5)", color: "#fff", "&:hover": { bgcolor: "rgba(0,0,0,0.75)" } }}>
+                    {isFullscreen ? <FullscreenExitIcon fontSize="small" /> : <FullscreenIcon fontSize="small" />}
+                  </IconButton>
+                </Box>
+
+                {/* Overlay: waiting / ended */}
                 {!isConnected && (
                   <Box sx={{
                     position: "absolute", inset: 0, display: "flex", flexDirection: "column",
-                    alignItems: "center", justifyContent: "center",
-                    bgcolor: "rgba(5,5,8,0.92)",
+                    alignItems: "center", justifyContent: "center", bgcolor: "rgba(5,5,8,0.92)",
                   }}>
                     {isWaiting ? (
                       <>
                         <CircularProgress color="primary" sx={{ mb: 2 }} />
                         <Typography color="text.secondary" fontSize={14}>
-                          Looking for someone to chat with{interests.length ? ` (${interests[0]})` : ""}…
+                          Looking for someone{interests.length ? ` into ${interests[0]}` : ""}…
                         </Typography>
                       </>
                     ) : state === "ended" ? (
-                      <Box textAlign="center">
+                      <Box textAlign="center" px={2}>
                         <Typography color="text.secondary" mb={2}>Stranger disconnected.</Typography>
                         <Button variant="contained" onClick={startSearch} sx={{ borderRadius: 2 }}>New Conversation</Button>
                       </Box>
@@ -703,7 +869,7 @@ export default function Chat() {
                 {/* Local PiP */}
                 <Box sx={{
                   position: "absolute", bottom: 10, right: 10,
-                  width: { xs: 90, md: 130 }, height: { xs: 64, md: 88 },
+                  width: { xs: 80, md: 130 }, height: { xs: 56, md: 88 },
                   borderRadius: 1.5, overflow: "hidden",
                   border: "2px solid rgba(108,99,255,0.4)",
                   boxShadow: "0 4px 16px rgba(0,0,0,0.7)",
@@ -712,12 +878,12 @@ export default function Chat() {
                 </Box>
               </Box>
 
-              {/* Video controls bar */}
+              {/* Video controls */}
               <Box sx={{
-                flexShrink: 0, px: 1.5, py: 1,
+                flexShrink: 0, px: 1, py: 0.75,
                 bgcolor: "background.paper",
                 borderTop: "1px solid rgba(255,255,255,0.06)",
-                display: "flex", alignItems: "center", gap: 0.5,
+                display: "flex", alignItems: "center", gap: 0.25, flexWrap: "wrap",
               }}>
                 <Tooltip title={micOn ? "Mute" : "Unmute"}>
                   <IconButton onClick={toggleMic} size="small" color={micOn ? "default" : "error"}><MicIcon fontSize="small" /></IconButton>
@@ -742,7 +908,7 @@ export default function Chat() {
                       </IconButton>
                     </Tooltip>
                     {showBgMenu && (
-                      <Paper sx={{ position: "absolute", bottom: 40, left: 0, p: 0.5, zIndex: 10, minWidth: 160 }}>
+                      <Paper sx={{ position: "absolute", bottom: 40, left: 0, p: 0.5, zIndex: 20, minWidth: 160 }}>
                         {(["none", "blur", "color"] as BgMode[]).map((m) => (
                           <MenuItem key={m} onClick={() => toggleBackground(m)} selected={bgMode === m} sx={{ borderRadius: 1, fontSize: 13 }}>
                             {m === "none" ? "No effect" : m === "blur" ? "Blur background" : "Dark background"}
@@ -754,173 +920,244 @@ export default function Chat() {
                 )}
                 <Box sx={{ flex: 1 }} />
                 {isConnected && isEnabled("friend_requests") && (
-                  <Tooltip title="Connect with stranger">
-                    <IconButton size="small" onClick={sendFriendRequest}><PersonAddIcon fontSize="small" /></IconButton>
-                  </Tooltip>
+                  <Tooltip title="Connect"><IconButton size="small" onClick={sendFriendRequest}><PersonAddIcon fontSize="small" /></IconButton></Tooltip>
                 )}
                 {isConnected && (
-                  <Tooltip title="Report">
-                    <IconButton size="small" color="warning" onClick={() => setReportDialog(true)}><FlagIcon fontSize="small" /></IconButton>
-                  </Tooltip>
+                  <Tooltip title="Report"><IconButton size="small" color="warning" onClick={() => setReportDialog(true)}><FlagIcon fontSize="small" /></IconButton></Tooltip>
+                )}
+
+                {/* Mobile: toggle chat panel */}
+                {isMobile && (
+                  <Button size="small" variant="outlined" onClick={() => setShowMobileChat(true)}
+                    sx={{ borderRadius: 1.5, fontSize: 11, py: 0.3, ml: 0.5 }}>
+                    Chat
+                  </Button>
                 )}
               </Box>
             </Box>
           )}
 
-          {/* ── Right: Chat panel ── */}
-          <Box sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {/* ── CHAT PANEL ── */}
+          {(!isMobile || mode === "text" || showMobileChat) && (
+            <Box sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
-            {/* Stop / New bar — Omegle style */}
-            <Box sx={{
-              flexShrink: 0, px: 2, py: 1,
-              bgcolor: "background.paper",
-              borderBottom: "1px solid rgba(255,255,255,0.07)",
-              display: "flex", alignItems: "center", gap: 1,
-            }}>
-              {matchedInterest && (
-                <Chip label={`You both like: ${matchedInterest}`} size="small" color="primary" variant="outlined"
-                  sx={{ height: 22, fontSize: 11, mr: "auto" }} />
-              )}
-              {!matchedInterest && myGeo && isConnected && (
-                <Typography variant="caption" color="text.disabled" sx={{ mr: "auto" }}>
-                  You {myGeo.flag} → {strangerLabel}
-                </Typography>
-              )}
-              {!matchedInterest && !myGeo && <Box sx={{ flex: 1 }} />}
+              {/* Stop / New bar */}
+              <Box sx={{
+                flexShrink: 0, px: { xs: 1, md: 2 }, py: 0.75,
+                bgcolor: "background.paper",
+                borderBottom: "1px solid rgba(255,255,255,0.07)",
+                display: "flex", alignItems: "center", gap: 0.75, flexWrap: "wrap",
+              }}>
+                {/* Mobile back button (video mode) */}
+                {isMobile && mode === "video" && showMobileChat && (
+                  <Button size="small" variant="text" color="inherit"
+                    onClick={() => setShowMobileChat(false)}
+                    sx={{ fontSize: 12, minWidth: 0, px: 0.75 }}>
+                    ← Video
+                  </Button>
+                )}
 
-              {/* Voice toggle (text mode only) */}
-              {mode === "text" && isConnected && (
-                <Tooltip title={voiceActive ? "End voice call" : "Voice call"}>
-                  <IconButton size="small" color={voiceActive ? "error" : "default"} onClick={toggleVoice}>
-                    {voiceActive ? <CallEndIcon fontSize="small" /> : <CallIcon fontSize="small" />}
+                {matchedInterest && (
+                  <Chip label={`You both like: ${matchedInterest}`} size="small" color="primary" variant="outlined"
+                    sx={{ height: 22, fontSize: 11 }} />
+                )}
+                {!matchedInterest && myGeo && isConnected && (
+                  <Typography variant="caption" color="text.disabled" sx={{ fontSize: 11 }}>
+                    {myGeo.flag} You → {strangerLabel}
+                  </Typography>
+                )}
+
+                <Box sx={{ flex: 1 }} />
+
+                {/* Copy transcript */}
+                {messages.length > 1 && (
+                  <Tooltip title="Copy chat">
+                    <IconButton size="small" onClick={copyTranscript}><ContentCopyIcon sx={{ fontSize: 14 }} /></IconButton>
+                  </Tooltip>
+                )}
+
+                {/* Voice toggle (text mode) */}
+                {mode === "text" && isConnected && (
+                  <Tooltip title={voiceActive ? "End voice call" : "Voice call"}>
+                    <IconButton size="small" color={voiceActive ? "error" : "default"} onClick={toggleVoice}>
+                      {voiceActive ? <CallEndIcon fontSize="small" /> : <CallIcon fontSize="small" />}
+                    </IconButton>
+                  </Tooltip>
+                )}
+
+                {isConnected && (
+                  <Tooltip title="Report"><IconButton size="small" color="warning" onClick={() => setReportDialog(true)}><FlagIcon fontSize="small" /></IconButton></Tooltip>
+                )}
+                {isConnected && isEnabled("friend_requests") && (
+                  <Tooltip title="Connect"><IconButton size="small" onClick={sendFriendRequest}><PersonAddIcon fontSize="small" /></IconButton></Tooltip>
+                )}
+
+                {isConnected || isWaiting ? (
+                  <>
+                    <Button variant="contained" size="small" onClick={handleNext}
+                      disabled={nextCooldown}
+                      sx={{
+                        borderRadius: 1.5, minWidth: 50, fontSize: 13, py: 0.4,
+                        bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" },
+                        "&.Mui-disabled": { bgcolor: "rgba(108,99,255,0.3)" },
+                      }}>
+                      New
+                    </Button>
+                    <Button variant="outlined" color="error" size="small" onClick={handleStop}
+                      sx={{ borderRadius: 1.5, minWidth: 50, fontSize: 13, py: 0.4 }}>
+                      Stop
+                    </Button>
+                  </>
+                ) : (
+                  <Button variant="contained" size="small" onClick={startSearch}
+                    sx={{ borderRadius: 1.5, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" }, fontSize: 13, py: 0.4 }}>
+                    {state === "ended" ? "New Chat" : "Start"}
+                  </Button>
+                )}
+              </Box>
+
+              {/* Progress bar when waiting */}
+              {isWaiting && <LinearProgress color="primary" sx={{ height: 2 }} />}
+
+              {/* Messages */}
+              <Box
+                ref={messagesBoxRef}
+                onScroll={handleMsgScroll}
+                sx={{
+                  flex: 1, overflowY: "auto", px: { xs: 1.5, md: 2 }, py: 1.5,
+                  fontFamily: "monospace", fontSize: { xs: 13, md: 13.5 }, lineHeight: 1.75,
+                  "&::-webkit-scrollbar": { width: 4 },
+                  "&::-webkit-scrollbar-thumb": { bgcolor: "rgba(255,255,255,0.1)", borderRadius: 2 },
+                }}>
+
+                {state === "idle" && messages.length === 0 && (
+                  <Box sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>
+                    <Typography variant="caption" display="block">What is MiloBolo?</Typography>
+                    <Typography variant="caption" display="block">MiloBolo allows you to talk to strangers!</Typography>
+                    <Typography variant="caption" display="block" mt={0.5}>Press <strong>Start</strong> to begin chatting anonymously.</Typography>
+                    {interests.length > 0 && (
+                      <Typography variant="caption" display="block" mt={0.5}>
+                        Interests: {interests.join(", ")}
+                      </Typography>
+                    )}
+                  </Box>
+                )}
+
+                {isWaiting && (
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, color: "text.disabled", mb: 1 }}>
+                    <CircularProgress size={12} />
+                    <Typography fontSize={13} color="text.disabled">
+                      Looking for someone to chat with{interests.length ? ` (${interests[0]})` : ""}…
+                    </Typography>
+                  </Box>
+                )}
+
+                {messages.map((m) => (
+                  <Box key={m.id} sx={{ mb: 0.25 }}>
+                    {m.from === "system" ? (
+                      <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13, userSelect: "text" }}>
+                        {m.text}
+                      </Typography>
+                    ) : (
+                      <Box sx={{ display: "flex", gap: 0.75, userSelect: "text" }}>
+                        <Typography component="span" sx={{
+                          fontWeight: 700, flexShrink: 0, fontSize: "inherit",
+                          color: m.from === "me" ? "#6C63FF" : "#FF6584",
+                        }}>
+                          {m.from === "me" ? "You" : strangerLabel}:
+                        </Typography>
+                        <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: "inherit" }}>
+                          {m.text}
+                          {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
+                        </Typography>
+                      </Box>
+                    )}
+                  </Box>
+                ))}
+
+                {peerTyping && (
+                  <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>
+                    {strangerLabel} is typing…
+                  </Typography>
+                )}
+                <div ref={chatEndRef} />
+              </Box>
+
+              {/* Scroll-to-bottom button */}
+              <Fade in={showScrollBtn}>
+                <Box sx={{ position: "relative" }}>
+                  <Box sx={{ position: "absolute", bottom: 8, right: 8, zIndex: 5 }}>
+                    <IconButton size="small" onClick={scrollToBottom}
+                      sx={{ bgcolor: "primary.main", color: "#fff", boxShadow: 3, "&:hover": { bgcolor: "primary.dark" } }}>
+                      <KeyboardArrowDownIcon fontSize="small" />
+                    </IconButton>
+                  </Box>
+                </Box>
+              </Fade>
+
+              {/* Reaction bar */}
+              {showReactions && isConnected && (
+                <Box sx={{ px: 1.5, py: 0.75, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 0.5 }}>
+                  {REACTIONS.map((e) => (
+                    <IconButton key={e} size="small" onClick={() => sendReaction(e)} sx={{ fontSize: 18, p: 0.4 }}>{e}</IconButton>
+                  ))}
+                </Box>
+              )}
+
+              {/* Input */}
+              <Box sx={{
+                flexShrink: 0, px: 1, py: 0.75,
+                borderTop: "1px solid rgba(255,255,255,0.07)",
+                bgcolor: "background.paper",
+                display: "flex", alignItems: "flex-end", gap: 0.5,
+              }}>
+                <Tooltip title="Reactions">
+                  <IconButton size="small" color={showReactions ? "primary" : "default"}
+                    onClick={() => setShowReactions((v) => !v)} disabled={!isConnected}>
+                    <EmojiEmotionsIcon fontSize="small" />
                   </IconButton>
                 </Tooltip>
-              )}
-              {isConnected && (
-                <Tooltip title="Report"><IconButton size="small" color="warning" onClick={() => setReportDialog(true)}><FlagIcon fontSize="small" /></IconButton></Tooltip>
-              )}
-              {isConnected && isEnabled("friend_requests") && (
-                <Tooltip title="Connect"><IconButton size="small" onClick={sendFriendRequest}><PersonAddIcon fontSize="small" /></IconButton></Tooltip>
-              )}
-
-              {isConnected || isWaiting ? (
-                <>
-                  <Button
-                    variant="contained" size="small"
-                    onClick={handleNext}
-                    sx={{ borderRadius: 1.5, minWidth: 56, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" } }}>
-                    New
-                  </Button>
-                  <Button
-                    variant="outlined" color="error" size="small"
-                    onClick={handleStop}
-                    sx={{ borderRadius: 1.5, minWidth: 56 }}>
-                    Stop
-                  </Button>
-                </>
-              ) : (
-                <Button
-                  variant="contained" size="small"
-                  onClick={startSearch}
-                  sx={{ borderRadius: 1.5, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" } }}>
-                  {state === "ended" ? "New Conversation" : "Start"}
-                </Button>
-              )}
-            </Box>
-
-            {/* Message log — Omegle IRC style */}
-            <Box sx={{ flex: 1, overflowY: "auto", p: 2, fontFamily: "monospace", fontSize: 13.5, lineHeight: 1.7 }}>
-
-              {isWaiting && (
-                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, color: "text.disabled", mb: 1 }}>
-                  <CircularProgress size={14} />
-                  <Typography fontSize={13} color="text.disabled">
-                    Looking for someone to chat with…
-                  </Typography>
-                </Box>
-              )}
-
-              {messages.map((m) => (
-                <Box key={m.id} sx={{ mb: 0.5 }}>
-                  {m.from === "system" ? (
-                    <Typography component="div" sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>
-                      {m.text}
+                <Box sx={{ flex: 1, position: "relative" }}>
+                  <TextField
+                    size="small" fullWidth multiline maxRows={isMobile ? 3 : 5}
+                    placeholder={
+                      !isConnected ? "Connecting…"
+                      : e2eReady ? "🔒 Encrypted message…"
+                      : "Type a message…"
+                    }
+                    value={text}
+                    onChange={(e) => handleTyping(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
+                    disabled={!isConnected}
+                    inputProps={{ maxLength: MAX_MSG }}
+                    sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2, fontSize: 13.5, bgcolor: "rgba(255,255,255,0.03)" } }}
+                  />
+                  {text.length > MAX_MSG * 0.8 && (
+                    <Typography variant="caption"
+                      sx={{ position: "absolute", bottom: 4, right: 10, color: text.length >= MAX_MSG ? "error.main" : "text.disabled", fontSize: 10 }}>
+                      {text.length}/{MAX_MSG}
                     </Typography>
-                  ) : (
-                    <Box sx={{ display: "flex", gap: 0.75 }}>
-                      <Typography component="span" sx={{
-                        fontWeight: 700, flexShrink: 0, fontSize: 13.5,
-                        color: m.from === "me" ? "#6C63FF" : "#FF6584",
-                      }}>
-                        {m.from === "me" ? "You" : strangerLabel}:
-                      </Typography>
-                      <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: 13.5 }}>
-                        {m.text}
-                        {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
-                      </Typography>
-                    </Box>
                   )}
                 </Box>
-              ))}
-
-              {peerTyping && (
-                <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>
-                  Stranger is typing…
-                </Typography>
-              )}
-              <div ref={chatEndRef} />
-            </Box>
-
-            {/* Reaction bar */}
-            {showReactions && isConnected && (
-              <Box sx={{ px: 2, py: 0.75, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 0.5, flexWrap: "wrap" }}>
-                {REACTIONS.map((e) => (
-                  <IconButton key={e} size="small" onClick={() => sendReaction(e)} sx={{ fontSize: 18, p: 0.4 }}>{e}</IconButton>
-                ))}
+                <Button variant="contained" size="small" onClick={sendMessage}
+                  disabled={!isConnected || !text.trim()}
+                  sx={{ borderRadius: 2, minWidth: 60, py: 0.9, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" }, flexShrink: 0 }}>
+                  <SendIcon sx={{ fontSize: 16 }} />
+                </Button>
               </Box>
-            )}
 
-            {/* Input row */}
-            <Box sx={{
-              flexShrink: 0, px: 1.5, py: 1,
-              borderTop: "1px solid rgba(255,255,255,0.07)",
-              bgcolor: "background.paper",
-              display: "flex", alignItems: "flex-end", gap: 0.5,
-            }}>
-              <Tooltip title="Reactions">
-                <IconButton size="small" color={showReactions ? "primary" : "default"}
-                  onClick={() => setShowReactions((v) => !v)} disabled={!isConnected}>
-                  <EmojiEmotionsIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-              <TextField
-                size="small" fullWidth multiline maxRows={5}
-                placeholder={
-                  !isConnected ? "Connecting…"
-                  : e2eReady ? "🔒 Type a message (encrypted)…"
-                  : "Type a message…"
-                }
-                value={text}
-                onChange={(e) => handleTyping(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
-                disabled={!isConnected}
-                sx={{
-                  "& .MuiOutlinedInput-root": {
-                    borderRadius: 2, fontSize: 13.5,
-                    bgcolor: "rgba(255,255,255,0.03)",
-                  },
-                }}
-              />
-              <Button
-                variant="contained" size="small"
-                onClick={sendMessage}
-                disabled={!isConnected || !text.trim()}
-                endIcon={<SendIcon sx={{ fontSize: "14px !important" }} />}
-                sx={{ borderRadius: 2, minWidth: 70, py: 1, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" } }}>
-                Send
-              </Button>
+              {/* Keyboard hint */}
+              {!isMobile && (
+                <Box sx={{ px: 2, pb: 0.5, display: "flex", gap: 2 }}>
+                  {[["Esc", "Stop"], ["Ctrl+↵", "New chat"]].map(([k, v]) => (
+                    <Typography key={k} variant="caption" color="text.disabled" sx={{ fontSize: 10 }}>
+                      <Box component="kbd" sx={{ px: 0.5, py: 0.1, borderRadius: 0.5, bgcolor: "rgba(255,255,255,0.06)", fontFamily: "monospace" }}>{k}</Box> {v}
+                    </Typography>
+                  ))}
+                </Box>
+              )}
             </Box>
-          </Box>
+          )}
         </Box>
       </Box>
 
@@ -943,7 +1180,6 @@ export default function Chat() {
         </DialogActions>
       </Dialog>
 
-      {/* Friend request dialog */}
       <FriendRequestDialog
         open={friendReq.open}
         fromName={friendReq.fromName}
