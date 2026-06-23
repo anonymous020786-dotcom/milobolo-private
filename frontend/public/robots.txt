@@ -3,5 +3,8 @@ Allow: /
 Disallow: /admin/
 Disallow: /api/
 Disallow: /auth/
+Disallow: /profile
+Disallow: /history
+Disallow: /friends
 
-Sitemap: https://chat.videodownloaders.cloud/sitemap.xml
+Sitemap: https://chat.videodownloaders.cloud/api/sitemap

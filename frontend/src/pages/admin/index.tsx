@@ -19,6 +19,7 @@ import SearchIcon from "@mui/icons-material/Search";
 import ChatBubbleIcon from "@mui/icons-material/ChatBubble";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import { supabase, Profile, FeatureFlag } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 
@@ -199,6 +200,7 @@ export default function AdminPanel() {
 
   return (
     <Layout title="Admin Panel">
+      <SeoHead title="Admin Panel" description="MiloBolo administration." path="/admin" noIndex />
       <Container maxWidth="xl" sx={{ py: 4 }}>
         <Box sx={{ display: "flex", alignItems: "center", mb: 4, gap: 2, flexWrap: "wrap" }}>
           <Typography variant="h4" fontWeight={800}>Admin Panel</Typography>

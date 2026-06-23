@@ -305,6 +305,50 @@ export default function Home() {
           </Typography>
         </Container>
 
+        {/* ── How it works ── */}
+        <Divider sx={{ opacity: 0.07 }} />
+        <Container maxWidth="md" sx={{ py: 6 }}>
+          <Typography variant="h6" fontWeight={700} mb={1} textAlign="center">How it works</Typography>
+          <Typography color="text.secondary" textAlign="center" mb={5} fontSize={14}>
+            Three steps to your next great conversation
+          </Typography>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 3 }}>
+            {[
+              {
+                step: "1",
+                title: "Pick your mode",
+                body: "Choose Video for face-to-face, Text for anonymous messaging, or Spy Mode to watch a conversation unfold.",
+                color: "#6C63FF",
+              },
+              {
+                step: "2",
+                title: "Get matched instantly",
+                body: "Our interest-based algorithm connects you with someone sharing your topics in seconds — no waiting rooms.",
+                color: "#FF6584",
+              },
+              {
+                step: "3",
+                title: "Chat freely",
+                body: "Your session is end-to-end encrypted. Skip at any time, add friends, or just enjoy the conversation.",
+                color: "#22c55e",
+              },
+            ].map(({ step, title, body, color }) => (
+              <Box key={step} sx={{ textAlign: "center", px: 2 }}>
+                <Box sx={{
+                  width: 52, height: 52, borderRadius: "50%", mx: "auto", mb: 2,
+                  background: `linear-gradient(135deg, ${color}33, ${color}11)`,
+                  border: `2px solid ${color}44`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  <Typography fontWeight={900} fontSize={20} sx={{ color }}>{step}</Typography>
+                </Box>
+                <Typography fontWeight={700} mb={0.75}>{title}</Typography>
+                <Typography variant="body2" color="text.secondary" lineHeight={1.7}>{body}</Typography>
+              </Box>
+            ))}
+          </Box>
+        </Container>
+
         {/* ── What is MiloBolo ── */}
         <Divider sx={{ opacity: 0.07 }} />
         <Container maxWidth="md" sx={{ py: 5 }}>

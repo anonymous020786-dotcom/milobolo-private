@@ -111,6 +111,7 @@ export default function Chat() {
   const [isTyping, setIsTyping] = useState(false);
   const [reportDialog, setReportDialog] = useState(false);
   const [reportReason, setReportReason] = useState("inappropriate");
+  const [reportDetails, setReportDetails] = useState("");
   const [showReactions, setShowReactions] = useState(false);
   const [peerReaction, setPeerReaction] = useState<string | null>(null);
   const [friendReq, setFriendReq] = useState({ open: false, from: "", fromUserId: "", fromName: "" });
@@ -709,8 +710,9 @@ export default function Chat() {
         screenshotB64 = canvas.toDataURL("image/jpeg", 0.5);
       }
     } catch {}
-    socketRef.current?.emit("report", { reportedId: peerId, reason: reportReason, screenshotB64 });
+    socketRef.current?.emit("report", { reportedId: peerId, reason: reportReason, details: reportDetails, screenshotB64 });
     setReportDialog(false);
+    setReportDetails("");
     setSnack("Report submitted. Thank you.");
   };
 
@@ -1208,21 +1210,44 @@ export default function Chat() {
       </Box>
 
       {/* Report dialog */}
-      <Dialog open={reportDialog} onClose={() => setReportDialog(false)} maxWidth="xs" fullWidth>
-        <DialogTitle>Report Stranger</DialogTitle>
-        <DialogContent>
-          <Select fullWidth value={reportReason} onChange={(e) => setReportReason(e.target.value)} sx={{ mt: 1 }}>
+      <Dialog open={reportDialog} onClose={() => { setReportDialog(false); setReportDetails(""); }} maxWidth="xs" fullWidth
+        PaperProps={{ sx: { bgcolor: "background.paper", borderRadius: 3 } }}>
+        <DialogTitle sx={{ pb: 1 }}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <FlagIcon color="warning" fontSize="small" />
+            <Typography fontWeight={700}>Report this user</Typography>
+          </Stack>
+        </DialogTitle>
+        <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2, pt: "12px !important" }}>
+          <Typography variant="body2" color="text.secondary">
+            Reports are reviewed by our moderation team. Abusive reports may result in your account being flagged.
+          </Typography>
+          <Select fullWidth size="small" value={reportReason} onChange={(e) => setReportReason(e.target.value)}
+            sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}>
             <MenuItem value="inappropriate">Inappropriate content</MenuItem>
             <MenuItem value="nudity">Nudity / Sexual content</MenuItem>
-            <MenuItem value="harassment">Harassment / Bullying</MenuItem>
-            <MenuItem value="spam">Spam / Bot</MenuItem>
-            <MenuItem value="minor">Possible minor</MenuItem>
+            <MenuItem value="harassment">Harassment or bullying</MenuItem>
+            <MenuItem value="hate_speech">Hate speech or slurs</MenuItem>
+            <MenuItem value="spam">Spam or bot behavior</MenuItem>
+            <MenuItem value="minor">Appears to be under 18</MenuItem>
+            <MenuItem value="self_harm">Self-harm or threats</MenuItem>
             <MenuItem value="other">Other</MenuItem>
           </Select>
+          <TextField
+            fullWidth multiline rows={3}
+            label="Additional details (optional)"
+            placeholder="Describe what happened..."
+            value={reportDetails}
+            onChange={(e) => setReportDetails(e.target.value)}
+            inputProps={{ maxLength: 500 }}
+            helperText={`${reportDetails.length}/500`}
+            size="small"
+            InputProps={{ sx: { borderRadius: 2 } }}
+          />
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setReportDialog(false)}>Cancel</Button>
-          <Button onClick={submitReport} color="error" variant="contained">Report</Button>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => { setReportDialog(false); setReportDetails(""); }}>Cancel</Button>
+          <Button onClick={submitReport} color="error" variant="contained" sx={{ borderRadius: 2 }}>Submit Report</Button>
         </DialogActions>
       </Dialog>
 
