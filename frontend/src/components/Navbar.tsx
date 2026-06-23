@@ -25,6 +25,8 @@ export default function Navbar() {
     { label: "Video Chat", href: "/chat?mode=video" },
     { label: "Text Chat", href: "/chat?mode=text" },
     { label: "Spy Mode", href: "/spy" },
+    { label: "Speed Dating", href: "/speed-dating" },
+    { label: "College", href: "/college" },
     { label: "Topics", href: "/topics" },
     { label: "Blog", href: "/blog" },
     { label: "About", href: "/about" },

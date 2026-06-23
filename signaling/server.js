@@ -279,8 +279,17 @@ function countryToFlag(code) {
 }
 
 // ─── Matchmaking helpers ────────────────────────────────────
-async function findMatch(socketId, mode, interests, country) {
+// Gender queue key: waiting:<mode>:gender:<myGender>_want:<wantGender>
+// Only gender-filtered users sit in gender queues; "any" users sit in the global queue only.
+async function findMatch(socketId, mode, interests, country, myGender, wantGender) {
+  const genderPrefix = (wantGender && wantGender !== "any") ? `gender:${wantGender}:` : "";
   try {
+    // If user wants a specific gender, check gender queue first
+    if (genderPrefix) {
+      const gKey = `waiting:${mode}:${genderPrefix}any`;
+      const waitingId = await redis.lpop(gKey);
+      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
+    }
     // Same-country interest match first
     if (country && country !== "?") {
       for (const interest of interests.slice(0, 5)) {
@@ -303,7 +312,11 @@ async function findMatch(socketId, mode, interests, country) {
     if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
     return null;
   } catch {
-    // In-memory fallback
+    if (genderPrefix) {
+      const gKey = `waiting:${mode}:${genderPrefix}any`;
+      const waitingId = memQueuePop(gKey);
+      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
+    }
     for (const interest of interests.slice(0, 5)) {
       const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
       const waitingId = memQueuePop(key);
@@ -315,9 +328,14 @@ async function findMatch(socketId, mode, interests, country) {
   }
 }
 
-async function enqueue(socketId, mode, interests, country) {
+async function enqueue(socketId, mode, interests, country, myGender) {
   try {
     const ttl = 300;
+    // Gender queue (so gender-seeking users can find them)
+    if (myGender && myGender !== "any") {
+      await redis.rpush(`waiting:${mode}:gender:${myGender}:any`, socketId);
+      await redis.expire(`waiting:${mode}:gender:${myGender}:any`, ttl);
+    }
     // Country queue
     if (country && country !== "?") {
       await redis.rpush(`waiting:${mode}:${country}:any`, socketId);
@@ -332,6 +350,9 @@ async function enqueue(socketId, mode, interests, country) {
       await redis.expire(key, ttl);
     }
   } catch {
+    if (myGender && myGender !== "any") {
+      memQueuePush(`waiting:${mode}:gender:${myGender}:any`, socketId);
+    }
     memQueuePush(`waiting:${mode}:any`, socketId);
     for (const interest of interests.slice(0, 5)) {
       memQueuePush(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, socketId);
@@ -339,8 +360,11 @@ async function enqueue(socketId, mode, interests, country) {
   }
 }
 
-async function dequeue(socketId, mode, interests, country) {
+async function dequeue(socketId, mode, interests, country, myGender) {
   try {
+    if (myGender && myGender !== "any") {
+      await redis.lrem(`waiting:${mode}:gender:${myGender}:any`, 0, socketId);
+    }
     if (country && country !== "?") {
       await redis.lrem(`waiting:${mode}:${country}:any`, 0, socketId);
     }
@@ -349,6 +373,9 @@ async function dequeue(socketId, mode, interests, country) {
       await redis.lrem(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, 0, socketId);
     }
   } catch {
+    if (myGender && myGender !== "any") {
+      memQueueRemove(`waiting:${mode}:gender:${myGender}:any`, socketId);
+    }
     memQueueRemove(`waiting:${mode}:any`, socketId);
     for (const interest of (interests || [])) {
       memQueueRemove(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, socketId);
@@ -384,6 +411,8 @@ io.on("connection", async (socket) => {
   let myInterests = [];
   let myMode = "video";
   let myCountry = null;
+  let myGender = "any"; // "any" | "male" | "female"
+  let wantGender = "any";
   let spyRole = null; // "spy" | "chatter_a" | "chatter_b" | null
 
   updateOnlineCount(1);
@@ -407,15 +436,17 @@ io.on("connection", async (socket) => {
   });
 
   // ── Matchmaking ─────────────────────────────────────────
-  socket.on("find_match", async ({ mode = "video", userId = null, interests = [] }) => {
+  socket.on("find_match", async ({ mode = "video", userId = null, interests = [], gender = "any", wantGender: wg = "any" }) => {
     myMode = mode;
     myInterests = interests;
+    myGender = (gender === "male" || gender === "female") ? gender : "any";
+    wantGender = (wg === "male" || wg === "female") ? wg : "any";
 
-    const meta = { userId, interests, mode, country: geoInfo };
+    const meta = { userId, interests, mode, country: geoInfo, gender: myGender };
     memSocketMeta[socket.id] = meta;
     try { await redis.set(`socket:${socket.id}`, JSON.stringify(meta), "EX", 600); } catch {}
 
-    const match = await findMatch(socket.id, mode, interests, myCountry);
+    const match = await findMatch(socket.id, mode, interests, myCountry, myGender, wantGender);
     if (match) {
       const { waitingId, matchedInterest } = match;
       roomId = uuidv4();
@@ -437,15 +468,17 @@ io.on("connection", async (socket) => {
         matchedInterest, peerInterests: peerData.interests || [],
         peerCountry: peerData.country || null,
         myCountry: geoInfo,
+        peerGender: peerData.gender || "any",
       });
       io.to(waitingId).emit("match_found", {
         roomId, isInitiator: false, peer: socket.id,
         matchedInterest, peerInterests: interests,
         peerCountry: geoInfo,
         myCountry: peerData.country || null,
+        peerGender: myGender,
       });
     } else {
-      await enqueue(socket.id, mode, interests, myCountry);
+      await enqueue(socket.id, mode, interests, myCountry, myGender);
       socket.emit("waiting", { country: geoInfo });
     }
   });
@@ -541,7 +574,7 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("cancel_search", async () => {
-    await dequeue(socket.id, myMode, myInterests, myCountry);
+    await dequeue(socket.id, myMode, myInterests, myCountry, myGender);
     try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
     try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
     socket.emit("search_cancelled");
@@ -580,6 +613,15 @@ io.on("connection", async (socket) => {
   socket.on("reaction", ({ roomId: rid, emoji }) => {
     const allowed = ["👍","❤️","😂","😮","😢","🔥","👏","💯"];
     if (rid && allowed.includes(emoji)) socket.to(rid).emit("reaction", { from: socket.id, emoji });
+  });
+
+  // ── Image message ───────────────────────────────────────
+  socket.on("image_message", ({ roomId: rid, imageUrl, senderRole }) => {
+    if (!rid || typeof imageUrl !== "string") return;
+    // Only allow R2 public URLs to prevent SSRF/phishing via socket relay
+    const allowed = process.env.NEXT_PUBLIC_R2_PUBLIC_URL || "https://pub-";
+    if (!imageUrl.startsWith(allowed) && !imageUrl.startsWith("https://pub-")) return;
+    socket.to(rid).emit("image_message", { from: socket.id, imageUrl, ts: Date.now(), senderRole: senderRole || null });
   });
 
   // ── Friend request ──────────────────────────────────────
@@ -635,7 +677,7 @@ io.on("connection", async (socket) => {
   // ── Disconnect ──────────────────────────────────────────
   socket.on("disconnect", async () => {
     updateOnlineCount(-1);
-    await dequeue(socket.id, myMode, myInterests, myCountry);
+    await dequeue(socket.id, myMode, myInterests, myCountry, myGender);
     try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
     try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
     delete memSocketMeta[socket.id];

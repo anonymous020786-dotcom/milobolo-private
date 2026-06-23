@@ -93,6 +93,7 @@ export default function Home() {
       ? (JSON.parse(localStorage.getItem("mb_settings") || "{}").defaultLanguage || "")
       : ""
   );
+  const [gender, setGender] = useState("any"); // "any" | "male" | "female"
   const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
@@ -105,8 +106,9 @@ export default function Home() {
     const m = mode || appSettings.defaultMode;
     const iStr = interests.length ? `&interests=${encodeURIComponent(interests.join(","))}` : "";
     const lStr = language ? `&lang=${language}` : "";
-    if (m === "video") router.push(`/camera-test?mode=video${iStr}${lStr}`);
-    else router.push(`/chat?mode=${m}${iStr}${lStr}`);
+    const gStr = gender !== "any" ? `&gender=${gender}` : "";
+    if (m === "video") router.push(`/camera-test?mode=video${iStr}${lStr}${gStr}`);
+    else router.push(`/chat?mode=${m}${iStr}${lStr}${gStr}`);
   };
 
   return (
@@ -246,17 +248,21 @@ export default function Home() {
           </Stack>
 
           <Collapse in={showFilters}>
-            <Box mb={1.5}>
+            <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, mb: 1.5 }}>
               <FormControl fullWidth size="small" sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2, bgcolor: "rgba(255,255,255,0.04)" } }}>
                 <InputLabel>Language Preference</InputLabel>
-                <Select
-                  value={language}
-                  label="Language Preference"
-                  onChange={(e) => setLanguage(e.target.value)}
-                >
+                <Select value={language} label="Language Preference" onChange={(e) => setLanguage(e.target.value)}>
                   {LANGUAGES.map((l) => (
                     <MenuItem key={l.code} value={l.code}>{l.label}</MenuItem>
                   ))}
+                </Select>
+              </FormControl>
+              <FormControl fullWidth size="small" sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2, bgcolor: "rgba(255,255,255,0.04)" } }}>
+                <InputLabel>Match with</InputLabel>
+                <Select value={gender} label="Match with" onChange={(e) => setGender(e.target.value)}>
+                  <MenuItem value="any">Anyone</MenuItem>
+                  <MenuItem value="male">Males</MenuItem>
+                  <MenuItem value="female">Females</MenuItem>
                 </Select>
               </FormControl>
             </Box>

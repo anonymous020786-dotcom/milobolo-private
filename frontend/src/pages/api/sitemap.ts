@@ -18,6 +18,8 @@ const STATIC_PAGES = [
   { url: "/status", priority: "0.4", changefreq: "hourly" },
   { url: "/leaderboard", priority: "0.6", changefreq: "daily" },
   { url: "/faq", priority: "0.8", changefreq: "monthly" },
+  { url: "/speed-dating", priority: "0.8", changefreq: "weekly" },
+  { url: "/college", priority: "0.7", changefreq: "monthly" },
 ];
 
 export default function sitemap(_req: NextApiRequest, res: NextApiResponse) {

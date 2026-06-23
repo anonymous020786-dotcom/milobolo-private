@@ -28,6 +28,8 @@ import FullscreenIcon from "@mui/icons-material/Fullscreen";
 import FullscreenExitIcon from "@mui/icons-material/FullscreenExit";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import ImageIcon from "@mui/icons-material/Image";
+import DownloadIcon from "@mui/icons-material/Download";
 import SignalCellularAltIcon from "@mui/icons-material/SignalCellularAlt";
 import SignalCellular2BarIcon from "@mui/icons-material/SignalCellular2Bar";
 import SignalCellular0BarIcon from "@mui/icons-material/SignalCellular0Bar";
@@ -58,6 +60,7 @@ interface Message {
   text: string;
   ts: number;
   encrypted: boolean;
+  imageUrl?: string;
 }
 
 const ICE = [
@@ -131,6 +134,8 @@ export default function Chat() {
   const [quality, setQuality] = useState<Quality>(null);
   const [connected, setConnected] = useState(false); // socket connected
   const [showMobileChat, setShowMobileChat] = useState(false); // mobile: show text panel
+  const [imgUploading, setImgUploading] = useState(false);
+  const [peerGender, setPeerGender] = useState<string | null>(null);
 
   // ── refs ─────────────────────────────────────────────────
   const socketRef = useRef<Socket | null>(null);
@@ -149,6 +154,7 @@ export default function Chat() {
   const msgCountRef = useRef(0);
   const matchedInterestRef = useRef<string | null>(null);
   const qualityTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { activate: activateBg } = useVirtualBackground(localVideoRef);
   const isConnected = state === "connected";
@@ -255,6 +261,45 @@ export default function Chat() {
       osc.start(); osc.stop(ctx.currentTime + 0.5);
     } catch {}
   }, []);
+
+  // ── Save transcript ──────────────────────────────────────
+  const saveTranscript = useCallback(() => {
+    const lines = messages
+      .filter((m) => m.from !== "system")
+      .map((m) => {
+        const d = new Date(m.ts).toLocaleTimeString();
+        const who = m.from === "me" ? "You" : strangerLabel;
+        return m.imageUrl ? `[${d}] ${who}: [Image] ${m.imageUrl}` : `[${d}] ${who}: ${m.text}`;
+      });
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `milobolo-chat-${new Date().toISOString().slice(0,10)}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [messages, strangerLabel]);
+
+  // ── Send image ───────────────────────────────────────────
+  const sendImage = useCallback(async (file: File) => {
+    if (!file || !isConnected) return;
+    setImgUploading(true);
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const res = await fetch("/api/upload-chat-image", { method: "POST", body: form });
+      const { url, error } = await res.json();
+      if (error || !url) { setSnack(error || "Image upload failed."); return; }
+      socketRef.current?.emit("image_message", { roomId, imageUrl: url, senderRole: null });
+      setMessages((prev) => [...prev, {
+        id: `img-me-${Date.now()}`, from: "me", text: "", ts: Date.now(), encrypted: false, imageUrl: url,
+      }]);
+    } catch {
+      setSnack("Image upload failed.");
+    } finally {
+      setImgUploading(false);
+    }
+  }, [isConnected, roomId]);
 
   // ── cleanup ──────────────────────────────────────────────
   const cleanup = useCallback(() => {
@@ -382,12 +427,13 @@ export default function Chat() {
       if (country) setMyGeo(country);
     });
 
-    socket.on("match_found", async ({ roomId: rid, isInitiator, peer, matchedInterest: mi, peerCountry: pc, myCountry: mc }) => {
+    socket.on("match_found", async ({ roomId: rid, isInitiator, peer, matchedInterest: mi, peerCountry: pc, myCountry: mc, peerGender: pg }) => {
       setRoomId(rid);
       setPeerId(peer);
       peerIdRef.current = peer;
       roomIdRef.current = rid;
       setState("connected");
+      setPeerGender(pg || null);
       if (settings.playMessageSound) playMatchSound();
       setSessionStart(Date.now());
       msgCountRef.current = 0;
@@ -397,7 +443,8 @@ export default function Chat() {
 
       if (pc) {
         setPeerCountry(pc);
-        setStrangerLabel(`Stranger ${pc.flag}`);
+        const genderLabel = pg === "male" ? " ♂" : pg === "female" ? " ♀" : "";
+        setStrangerLabel(`Stranger ${pc.flag}${genderLabel}`);
       }
       if (mc) setMyGeo(mc);
 
@@ -470,6 +517,11 @@ export default function Chat() {
     });
 
     socket.on("typing", ({ typing }) => { if (settings.showTypingIndicator) setPeerTyping(typing); });
+    socket.on("image_message", ({ imageUrl, ts }) => {
+      setMessages((prev) => [...prev, {
+        id: `img-peer-${ts}`, from: "peer", text: "", ts, encrypted: false, imageUrl,
+      }]);
+    });
     socket.on("reaction", ({ emoji }) => { setPeerReaction(emoji); setTimeout(() => setPeerReaction(null), 2500); });
     socket.on("peer_screen_share", ({ active }) => setPeerSharingScreen(active));
 
@@ -514,9 +566,14 @@ export default function Chat() {
     setState("waiting");
     setMessages([]);
     setRoomId(""); setPeerId(""); peerIdRef.current = ""; roomIdRef.current = "";
+    const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const myGenderParam = urlParams?.get("gender") || "any";
+    const wantGenderParam = urlParams?.get("wantGender") || "any";
     socketRef.current?.emit("find_match", {
       mode, userId: user?.id || null,
       interests: isEnabled("interest_matching") ? interests : [],
+      gender: myGenderParam,
+      wantGender: wantGenderParam,
     });
   }, [mode, user, interests, isEnabled, getLocalStream]);
 
@@ -1046,10 +1103,19 @@ export default function Chat() {
                     </Button>
                   </>
                 ) : (
-                  <Button variant="contained" size="small" onClick={startSearch}
-                    sx={{ borderRadius: 1.5, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" }, fontSize: 13, py: 0.4 }}>
-                    {state === "ended" ? "New Chat" : "Start"}
-                  </Button>
+                  <>
+                    <Button variant="contained" size="small" onClick={startSearch}
+                      sx={{ borderRadius: 1.5, bgcolor: "#6C63FF", "&:hover": { bgcolor: "#5a52e0" }, fontSize: 13, py: 0.4 }}>
+                      {state === "ended" ? "New Chat" : "Start"}
+                    </Button>
+                    {state === "ended" && messages.filter((m) => m.from !== "system").length > 0 && (
+                      <Tooltip title="Download chat transcript">
+                        <IconButton size="small" onClick={saveTranscript} sx={{ ml: 0.5 }}>
+                          <DownloadIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    )}
+                  </>
                 )}
               </Box>
 
@@ -1113,10 +1179,19 @@ export default function Chat() {
                             }}>
                               {m.from === "me" ? "You" : strangerLabel}:
                             </Typography>
+                            {m.imageUrl ? (
+                              <Box component="a" href={m.imageUrl} target="_blank" rel="noopener noreferrer"
+                                sx={{ flex: 1, display: "block" }}>
+                                <Box component="img" src={m.imageUrl} alt="shared image"
+                                  sx={{ maxWidth: 220, maxHeight: 220, borderRadius: 2, display: "block", cursor: "pointer",
+                                    border: "1px solid rgba(255,255,255,0.1)", mt: 0.25 }} />
+                              </Box>
+                            ) : (
                             <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: "inherit", flex: 1 }}>
                               {m.text}
                               {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
                             </Typography>
+                            )}
                             <Typography className="msg-ts" component="span"
                               sx={{ fontSize: 10, color: "text.disabled", flexShrink: 0, alignSelf: "flex-end", opacity: 0, transition: "opacity 0.15s", pb: 0.1 }}>
                               {ts}
@@ -1177,11 +1252,28 @@ export default function Chat() {
                 bgcolor: "background.paper",
                 display: "flex", alignItems: "flex-end", gap: 0.5,
               }}>
+                {/* Hidden file input */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  aria-label="Upload image"
+                  className={styles.visuallyHidden}
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = ""; }}
+                />
                 <Tooltip title="Reactions">
                   <IconButton size="small" color={showReactions ? "primary" : "default"}
                     onClick={() => setShowReactions((v) => !v)} disabled={!isConnected}>
                     <EmojiEmotionsIcon fontSize="small" />
                   </IconButton>
+                </Tooltip>
+                <Tooltip title={imgUploading ? "Uploading…" : "Send image"}>
+                  <span>
+                    <IconButton size="small" disabled={!isConnected || imgUploading}
+                      onClick={() => fileInputRef.current?.click()}>
+                      {imgUploading ? <CircularProgress size={16} /> : <ImageIcon fontSize="small" />}
+                    </IconButton>
+                  </span>
                 </Tooltip>
                 <Box sx={{ flex: 1, position: "relative" }}>
                   <TextField
