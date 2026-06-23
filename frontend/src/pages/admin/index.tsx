@@ -16,6 +16,8 @@ import FlagIcon from "@mui/icons-material/Flag";
 import SettingsIcon from "@mui/icons-material/Settings";
 import BarChartIcon from "@mui/icons-material/BarChart";
 import SearchIcon from "@mui/icons-material/Search";
+import ChatBubbleIcon from "@mui/icons-material/ChatBubble";
+import VideocamIcon from "@mui/icons-material/Videocam";
 import Layout from "@/components/Layout";
 import { supabase, Profile, FeatureFlag } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
@@ -45,6 +47,8 @@ export default function AdminPanel() {
   const [banReason, setBanReason] = useState("");
   const [userSearch, setUserSearch] = useState("");
   const [reportSearch, setReportSearch] = useState("");
+  const [chatLogs, setChatLogs] = useState<any[]>([]);
+  const [chatLogSearch, setChatLogSearch] = useState("");
 
   useEffect(() => {
     if (!authLoading && (!profile || !["admin", "superadmin"].includes(profile.role))) {
@@ -111,6 +115,7 @@ export default function AdminPanel() {
   useEffect(() => {
     if (tab === 1) loadUsers();
     if (tab === 2) loadReports();
+    if (tab === 4) loadChatLogs();
   }, [tab]);
 
   const toggleFlag = async (key: string, enabled: boolean) => {
@@ -141,6 +146,17 @@ export default function AdminPanel() {
     setReports((prev) => prev.map((r) => r.id === id ? { ...r, status } : r));
   };
 
+  const loadChatLogs = async () => {
+    setLoadingData(true);
+    const { data } = await supabase
+      .from("chat_history")
+      .select("id, user_id, mode, duration_seconds, message_count, matched_interest, created_at")
+      .order("created_at", { ascending: false })
+      .limit(300);
+    if (data) setChatLogs(data);
+    setLoadingData(false);
+  };
+
   const changeUserRole = async (userId: string, role: string) => {
     if (profile?.role !== "superadmin") return showMsg("error", "Only superadmin can change roles");
     await supabase.from("profiles").update({ role }).eq("id", userId);
@@ -157,6 +173,16 @@ export default function AdminPanel() {
       u.role.toLowerCase().includes(q)
     );
   }, [users, userSearch]);
+
+  const filteredChatLogs = useMemo(() => {
+    const q = chatLogSearch.toLowerCase();
+    if (!q) return chatLogs;
+    return chatLogs.filter((r) =>
+      (r.matched_interest || "").toLowerCase().includes(q) ||
+      (r.mode || "").toLowerCase().includes(q) ||
+      (r.user_id || "").toLowerCase().includes(q)
+    );
+  }, [chatLogs, chatLogSearch]);
 
   const filteredReports = useMemo(() => {
     const q = reportSearch.toLowerCase();
@@ -178,7 +204,7 @@ export default function AdminPanel() {
           <Typography variant="h4" fontWeight={800}>Admin Panel</Typography>
           <Chip label={profile.role.toUpperCase()} color="primary" />
           <Box flex={1} />
-          <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => { loadStats(); if (tab === 1) loadUsers(); if (tab === 2) loadReports(); }}>
+          <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => { loadStats(); if (tab === 1) loadUsers(); if (tab === 2) loadReports(); if (tab === 4) loadChatLogs(); }}>
             Refresh
           </Button>
         </Box>
@@ -210,11 +236,12 @@ export default function AdminPanel() {
           </Grid>
         )}
 
-        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3 }}>
+        <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ mb: 3 }} variant="scrollable" scrollButtons="auto">
           <Tab icon={<SettingsIcon />} label="Feature Flags" iconPosition="start" />
           <Tab icon={<PeopleIcon />} label="Users" iconPosition="start" />
           <Tab icon={<FlagIcon />} label="Reports" iconPosition="start" />
           <Tab icon={<BarChartIcon />} label="Stats" iconPosition="start" />
+          <Tab icon={<ChatBubbleIcon />} label="Chat Logs" iconPosition="start" />
         </Tabs>
 
         {/* Feature Flags */}
@@ -486,6 +513,72 @@ export default function AdminPanel() {
             </Grid>
           </Grid>
         )}
+        {/* Chat Logs */}
+        {tab === 4 && (
+          <Box>
+            <Stack direction="row" justifyContent="space-between" mb={2} gap={1} flexWrap="wrap">
+              <TextField
+                size="small" placeholder="Search by interest, mode, or user ID…"
+                value={chatLogSearch} onChange={(e) => setChatLogSearch(e.target.value)}
+                sx={{ minWidth: 280, "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+                InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+              />
+              <IconButton onClick={loadChatLogs}><RefreshIcon /></IconButton>
+            </Stack>
+            {loadingData ? <CircularProgress /> : (
+              <>
+                <Typography variant="caption" color="text.disabled" mb={1} display="block">
+                  {filteredChatLogs.length} of {chatLogs.length} sessions
+                </Typography>
+                <TableContainer component={Paper}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Mode</TableCell>
+                        <TableCell>Interest</TableCell>
+                        <TableCell>Duration</TableCell>
+                        <TableCell>Messages</TableCell>
+                        <TableCell>User</TableCell>
+                        <TableCell>Date</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {filteredChatLogs.map((r) => {
+                        const mins = Math.floor((r.duration_seconds || 0) / 60);
+                        const secs = (r.duration_seconds || 0) % 60;
+                        return (
+                          <TableRow key={r.id} hover>
+                            <TableCell>
+                              <Chip
+                                icon={r.mode === "video" ? <VideocamIcon /> : <ChatBubbleIcon />}
+                                label={r.mode}
+                                size="small"
+                                color={r.mode === "video" ? "primary" : "default"}
+                                variant="outlined"
+                              />
+                            </TableCell>
+                            <TableCell>{r.matched_interest || <Typography variant="caption" color="text.disabled">—</Typography>}</TableCell>
+                            <TableCell sx={{ fontSize: 12 }}>
+                              {mins > 0 ? `${mins}m ` : ""}{secs}s
+                            </TableCell>
+                            <TableCell>{r.message_count || 0}</TableCell>
+                            <TableCell sx={{ fontSize: 11, fontFamily: "monospace" }}>
+                              {r.user_id ? r.user_id.slice(0, 10) + "…" : <Typography variant="caption" color="text.disabled">anon</Typography>}
+                            </TableCell>
+                            <TableCell sx={{ fontSize: 12 }}>
+                              {new Date(r.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" })}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </>
+            )}
+          </Box>
+        )}
+
       </Container>
 
       <Dialog open={banDialog.open} onClose={() => setBanDialog({ open: false, user: null })} maxWidth="xs" fullWidth

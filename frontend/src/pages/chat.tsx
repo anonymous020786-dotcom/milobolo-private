@@ -351,6 +351,22 @@ export default function Chat() {
     socket.on("reconnect", () => {
       setConnected(true);
       setSnack("Reconnected to server.");
+      // Re-emit fingerprint so the server recognises us again
+      if (fpId) socket.emit("fingerprint", { fpId });
+      // If we were waiting for a match, re-queue automatically
+      setState((prev) => {
+        if (prev === "waiting") {
+          const interests = (typeof window !== "undefined"
+            ? new URLSearchParams(window.location.search).get("interests")
+            : null) || "";
+          socket.emit("find_peer", {
+            mode,
+            interests: interests ? interests.split(",") : [],
+            userId: null,
+          });
+        }
+        return prev;
+      });
     });
 
     socket.on("banned", ({ reason }) => {

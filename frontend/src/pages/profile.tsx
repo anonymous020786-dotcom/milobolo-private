@@ -13,6 +13,7 @@ import ChatIcon from "@mui/icons-material/Chat";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import OtpInput from "@/components/auth/OtpInput";
 import { useAuth } from "@/context/AuthContext";
 import { supabase } from "@/lib/supabase";
@@ -201,6 +202,7 @@ export default function Profile() {
 
   return (
     <Layout title="My Profile">
+      <SeoHead title="My Profile" description="Manage your MiloBolo profile, avatar, and account settings." path="/profile" noIndex />
       <Container maxWidth="lg" sx={{ py: 4 }}>
         {msg.text && <Alert severity={msg.type as any} sx={{ mb: 3 }}>{msg.text}</Alert>}
         {otpError && <Alert severity="error" sx={{ mb: 3 }}>{otpError}</Alert>}

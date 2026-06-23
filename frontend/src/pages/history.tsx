@@ -13,6 +13,7 @@ import ChatIcon from "@mui/icons-material/Chat";
 import VideocamIcon from "@mui/icons-material/Videocam";
 import SearchIcon from "@mui/icons-material/Search";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
 
@@ -105,6 +106,7 @@ export default function ChatHistory() {
 
   return (
     <Layout title="Chat History">
+      <SeoHead title="Chat History" description="View your past chats on MiloBolo." path="/history" noIndex />
       <Container maxWidth="lg" sx={{ py: 4 }}>
         <Stack direction="row" justifyContent="space-between" alignItems="center" mb={4} flexWrap="wrap" gap={1}>
           <Typography variant="h4" fontWeight={800}>Chat History</Typography>

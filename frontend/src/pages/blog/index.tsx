@@ -1,5 +1,6 @@
 import { useState, useMemo } from "react";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Box, Card, CardActionArea, CardContent, Chip, Container,
   Divider, Grid, InputAdornment, MenuItem, Pagination,
@@ -98,6 +99,11 @@ export default function BlogIndex() {
       title="Blog — Random Chat Tips, Safety, Privacy & More"
       description="MiloBolo Blog: expert guides on random chat safety, privacy, technology, mental health, and getting the most from video chat with strangers."
     >
+      <SeoHead
+        title="Blog — Random Chat Tips, Safety, Privacy & More"
+        description="MiloBolo Blog: expert guides on random chat safety, privacy, technology, mental health, and getting the most from video chat with strangers."
+        path="/blog"
+      />
       {/* Hero */}
       <Box
         sx={{

@@ -1,6 +1,7 @@
 import { GetStaticPaths, GetStaticProps } from "next";
 import Head from "next/head";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Box, Button, Card, CardActionArea, CardContent, Chip, Container,
   Divider, Grid, LinearProgress, Stack, Tooltip, Typography, useTheme,
@@ -89,11 +90,15 @@ export default function BlogPost({ post, related }: Props) {
       title={`${post.title} | MiloBolo Blog`}
       description={post.excerpt}
     >
+      <SeoHead
+        title={`${post.title} | MiloBolo Blog`}
+        description={post.excerpt}
+        path={`/blog/${post.slug}`}
+        jsonLd={schema}
+      />
       <Head>
-        <script
-          type="application/ld+json"
-          dangerouslySetInnerHTML={{ __html: JSON.stringify(schema) }}
-        />
+        <meta property="article:published_time" content={post.date} />
+        <meta property="article:tag" content={post.tags.join(",")} />
       </Head>
 
       {/* Reading progress bar */}
