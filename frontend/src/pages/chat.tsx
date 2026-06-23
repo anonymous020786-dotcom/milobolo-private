@@ -569,11 +569,13 @@ export default function Chat() {
     const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
     const myGenderParam = urlParams?.get("gender") || "any";
     const wantGenderParam = urlParams?.get("wantGender") || "any";
+    const collegeParam = urlParams?.get("college") === "1";
     socketRef.current?.emit("find_match", {
       mode, userId: user?.id || null,
       interests: isEnabled("interest_matching") ? interests : [],
       gender: myGenderParam,
       wantGender: wantGenderParam,
+      college: collegeParam,
     });
   }, [mode, user, interests, isEnabled, getLocalStream]);
 

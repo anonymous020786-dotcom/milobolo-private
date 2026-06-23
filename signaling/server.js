@@ -73,7 +73,7 @@ app.post("/api/send-otp", async (req, res) => {
   try {
     const { email, type } = req.body;
     if (!email || !type) return res.status(400).json({ error: "Invalid request" });
-    const validTypes = ["verify", "reset", "delete", "change_email"];
+    const validTypes = ["verify", "reset", "delete", "change_email", "college_verify"];
     if (!validTypes.includes(type)) return res.status(400).json({ error: "Invalid OTP type" });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -281,9 +281,16 @@ function countryToFlag(code) {
 // ─── Matchmaking helpers ────────────────────────────────────
 // Gender queue key: waiting:<mode>:gender:<myGender>_want:<wantGender>
 // Only gender-filtered users sit in gender queues; "any" users sit in the global queue only.
-async function findMatch(socketId, mode, interests, country, myGender, wantGender) {
+async function findMatch(socketId, mode, interests, country, myGender, wantGender, college) {
   const genderPrefix = (wantGender && wantGender !== "any") ? `gender:${wantGender}:` : "";
+  const ns = college ? `college:${mode}` : `waiting:${mode}`;
   try {
+    // College pool is isolated — only match within it
+    if (college) {
+      const waitingId = await redis.lpop(`${ns}:any`);
+      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
+      return null;
+    }
     // If user wants a specific gender, check gender queue first
     if (genderPrefix) {
       const gKey = `waiting:${mode}:${genderPrefix}any`;
@@ -312,6 +319,11 @@ async function findMatch(socketId, mode, interests, country, myGender, wantGende
     if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
     return null;
   } catch {
+    if (college) {
+      const waitingId = memQueuePop(`${ns}:any`);
+      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
+      return null;
+    }
     if (genderPrefix) {
       const gKey = `waiting:${mode}:${genderPrefix}any`;
       const waitingId = memQueuePop(gKey);
@@ -328,9 +340,14 @@ async function findMatch(socketId, mode, interests, country, myGender, wantGende
   }
 }
 
-async function enqueue(socketId, mode, interests, country, myGender) {
+async function enqueue(socketId, mode, interests, country, myGender, college) {
+  const ttl = 300;
   try {
-    const ttl = 300;
+    if (college) {
+      await redis.rpush(`college:${mode}:any`, socketId);
+      await redis.expire(`college:${mode}:any`, ttl);
+      return;
+    }
     // Gender queue (so gender-seeking users can find them)
     if (myGender && myGender !== "any") {
       await redis.rpush(`waiting:${mode}:gender:${myGender}:any`, socketId);
@@ -350,6 +367,10 @@ async function enqueue(socketId, mode, interests, country, myGender) {
       await redis.expire(key, ttl);
     }
   } catch {
+    if (college) {
+      memQueuePush(`college:${mode}:any`, socketId);
+      return;
+    }
     if (myGender && myGender !== "any") {
       memQueuePush(`waiting:${mode}:gender:${myGender}:any`, socketId);
     }
@@ -360,8 +381,12 @@ async function enqueue(socketId, mode, interests, country, myGender) {
   }
 }
 
-async function dequeue(socketId, mode, interests, country, myGender) {
+async function dequeue(socketId, mode, interests, country, myGender, college) {
   try {
+    if (college) {
+      await redis.lrem(`college:${mode}:any`, 0, socketId);
+      return;
+    }
     if (myGender && myGender !== "any") {
       await redis.lrem(`waiting:${mode}:gender:${myGender}:any`, 0, socketId);
     }
@@ -373,6 +398,10 @@ async function dequeue(socketId, mode, interests, country, myGender) {
       await redis.lrem(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, 0, socketId);
     }
   } catch {
+    if (college) {
+      memQueueRemove(`college:${mode}:any`, socketId);
+      return;
+    }
     if (myGender && myGender !== "any") {
       memQueueRemove(`waiting:${mode}:gender:${myGender}:any`, socketId);
     }
@@ -386,6 +415,7 @@ async function dequeue(socketId, mode, interests, country, myGender) {
 // ─── Spy mode queue ─────────────────────────────────────────
 // spy queue: waiting for a question asker to join two chatters
 const spyRooms = {}; // roomId → { a, b, question, spyId? }
+const sdRatings = {}; // roomId → { socketId: "like"|"pass" }
 
 async function findSpyMatch() {
   // Find two text-mode chatters
@@ -413,6 +443,7 @@ io.on("connection", async (socket) => {
   let myCountry = null;
   let myGender = "any"; // "any" | "male" | "female"
   let wantGender = "any";
+  let myCollege = false;
   let spyRole = null; // "spy" | "chatter_a" | "chatter_b" | null
 
   updateOnlineCount(1);
@@ -436,17 +467,18 @@ io.on("connection", async (socket) => {
   });
 
   // ── Matchmaking ─────────────────────────────────────────
-  socket.on("find_match", async ({ mode = "video", userId = null, interests = [], gender = "any", wantGender: wg = "any" }) => {
+  socket.on("find_match", async ({ mode = "video", userId = null, interests = [], gender = "any", wantGender: wg = "any", college = false }) => {
     myMode = mode;
     myInterests = interests;
     myGender = (gender === "male" || gender === "female") ? gender : "any";
     wantGender = (wg === "male" || wg === "female") ? wg : "any";
+    myCollege = !!college;
 
-    const meta = { userId, interests, mode, country: geoInfo, gender: myGender };
+    const meta = { userId, interests, mode, country: geoInfo, gender: myGender, college: myCollege };
     memSocketMeta[socket.id] = meta;
     try { await redis.set(`socket:${socket.id}`, JSON.stringify(meta), "EX", 600); } catch {}
 
-    const match = await findMatch(socket.id, mode, interests, myCountry, myGender, wantGender);
+    const match = await findMatch(socket.id, mode, interests, myCountry, myGender, wantGender, myCollege);
     if (match) {
       const { waitingId, matchedInterest } = match;
       roomId = uuidv4();
@@ -478,7 +510,7 @@ io.on("connection", async (socket) => {
         peerGender: myGender,
       });
     } else {
-      await enqueue(socket.id, mode, interests, myCountry, myGender);
+      await enqueue(socket.id, mode, interests, myCountry, myGender, myCollege);
       socket.emit("waiting", { country: geoInfo });
     }
   });
@@ -574,7 +606,7 @@ io.on("connection", async (socket) => {
   });
 
   socket.on("cancel_search", async () => {
-    await dequeue(socket.id, myMode, myInterests, myCountry, myGender);
+    await dequeue(socket.id, myMode, myInterests, myCountry, myGender, myCollege);
     try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
     try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
     socket.emit("search_cancelled");
@@ -624,6 +656,19 @@ io.on("connection", async (socket) => {
     socket.to(rid).emit("image_message", { from: socket.id, imageUrl, ts: Date.now(), senderRole: senderRole || null });
   });
 
+  // ── Speed dating rating ─────────────────────────────────
+  socket.on("sd_rating", ({ roomId: rid, rating }) => {
+    if (!rid || (rating !== "like" && rating !== "pass")) return;
+    if (!sdRatings[rid]) sdRatings[rid] = {};
+    sdRatings[rid][socket.id] = rating;
+    // Check for mutual like
+    const votes = Object.values(sdRatings[rid]);
+    if (votes.length === 2 && votes.every((v) => v === "like")) {
+      io.to(rid).emit("sd_mutual_like", { roomId: rid });
+      delete sdRatings[rid];
+    }
+  });
+
   // ── Friend request ──────────────────────────────────────
   socket.on("friend_request", ({ to, fromUserId, fromName }) => {
     io.to(to).emit("friend_request", { from: socket.id, fromUserId, fromName });
@@ -648,6 +693,7 @@ io.on("connection", async (socket) => {
       socket.leave(roomId);
       io.sockets.sockets.get(pairedWith)?.leave(roomId);
       try { if (roomId) await redis.del(`room:${roomId}`); } catch {}
+      if (roomId) delete sdRatings[roomId];
       pairedWith = null;
     }
     // Clean spy room
@@ -677,7 +723,7 @@ io.on("connection", async (socket) => {
   // ── Disconnect ──────────────────────────────────────────
   socket.on("disconnect", async () => {
     updateOnlineCount(-1);
-    await dequeue(socket.id, myMode, myInterests, myCountry, myGender);
+    await dequeue(socket.id, myMode, myInterests, myCountry, myGender, myCollege);
     try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
     try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
     delete memSocketMeta[socket.id];
@@ -700,6 +746,7 @@ io.on("connection", async (socket) => {
     }
 
     try { if (roomId) await redis.del(`room:${roomId}`); } catch {}
+    if (roomId) delete sdRatings[roomId];
   });
 });
 
