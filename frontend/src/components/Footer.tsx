@@ -13,6 +13,7 @@ const FOOTER_LINKS = [
       { label: "Video Chat", href: "/camera-test?mode=video" },
       { label: "Text Chat", href: "/chat?mode=text" },
       { label: "Spy Mode", href: "/spy" },
+      { label: "Topics", href: "/topics" },
       { label: "Camera Test", href: "/camera-test" },
     ],
   },

@@ -1,23 +1,35 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/router";
 import {
   Box, Container, Grid, Card, CardContent, Typography, Tab, Tabs,
-  Switch, FormControlLabel, Alert, Chip, Table, TableBody, TableCell,
+  Switch, Alert, Chip, Table, TableBody, TableCell,
   TableContainer, TableHead, TableRow, Paper, Button, IconButton,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField,
   Select, MenuItem, CircularProgress, Tooltip, Divider, Stack,
+  InputAdornment, LinearProgress,
 } from "@mui/material";
 import BlockIcon from "@mui/icons-material/Block";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import DeleteIcon from "@mui/icons-material/Delete";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import PeopleIcon from "@mui/icons-material/People";
 import FlagIcon from "@mui/icons-material/Flag";
 import SettingsIcon from "@mui/icons-material/Settings";
 import BarChartIcon from "@mui/icons-material/BarChart";
+import SearchIcon from "@mui/icons-material/Search";
 import Layout from "@/components/Layout";
 import { supabase, Profile, FeatureFlag } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
+
+interface StatsData {
+  totalUsers: number;
+  bannedUsers: number;
+  pendingReports: number;
+  totalReports: number;
+  actionedReports: number;
+  dismissedReports: number;
+  enabledFlags: number;
+  totalFlags: number;
+}
 
 export default function AdminPanel() {
   const router = useRouter();
@@ -26,11 +38,13 @@ export default function AdminPanel() {
   const [flags, setFlags] = useState<FeatureFlag[]>([]);
   const [users, setUsers] = useState<Profile[]>([]);
   const [reports, setReports] = useState<any[]>([]);
-  const [stats, setStats] = useState<any>(null);
+  const [stats, setStats] = useState<StatsData | null>(null);
   const [loadingData, setLoadingData] = useState(false);
   const [msg, setMsg] = useState({ type: "", text: "" });
   const [banDialog, setBanDialog] = useState<{ open: boolean; user: Profile | null }>({ open: false, user: null });
   const [banReason, setBanReason] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+  const [reportSearch, setReportSearch] = useState("");
 
   useEffect(() => {
     if (!authLoading && (!profile || !["admin", "superadmin"].includes(profile.role))) {
@@ -50,26 +64,40 @@ export default function AdminPanel() {
 
   const loadUsers = async () => {
     setLoadingData(true);
-    const { data } = await supabase.from("profiles").select("*").order("created_at", { ascending: false }).limit(100);
+    const { data } = await supabase.from("profiles").select("*").order("created_at", { ascending: false }).limit(200);
     if (data) setUsers(data);
     setLoadingData(false);
   };
 
   const loadReports = async () => {
     setLoadingData(true);
-    const { data } = await supabase.from("reports").select("*").order("created_at", { ascending: false }).limit(100);
+    const { data } = await supabase.from("reports").select("*").order("created_at", { ascending: false }).limit(200);
     if (data) setReports(data);
     setLoadingData(false);
   };
 
   const loadStats = async () => {
-    const [usersCount, reportsCount] = await Promise.all([
-      supabase.from("profiles").select("id", { count: "exact" }),
-      supabase.from("reports").select("id", { count: "exact" }).eq("status", "pending"),
+    const [
+      usersRes, bannedRes, pendingReportsRes, totalReportsRes,
+      actionedRes, dismissedRes, flagsRes,
+    ] = await Promise.all([
+      supabase.from("profiles").select("id", { count: "exact", head: true }),
+      supabase.from("profiles").select("id", { count: "exact", head: true }).eq("is_banned", true),
+      supabase.from("reports").select("id", { count: "exact", head: true }).eq("status", "pending"),
+      supabase.from("reports").select("id", { count: "exact", head: true }),
+      supabase.from("reports").select("id", { count: "exact", head: true }).eq("status", "actioned"),
+      supabase.from("reports").select("id", { count: "exact", head: true }).eq("status", "dismissed"),
+      supabase.from("feature_flags").select("id, enabled"),
     ]);
     setStats({
-      totalUsers: usersCount.count || 0,
-      pendingReports: reportsCount.count || 0,
+      totalUsers: usersRes.count || 0,
+      bannedUsers: bannedRes.count || 0,
+      pendingReports: pendingReportsRes.count || 0,
+      totalReports: totalReportsRes.count || 0,
+      actionedReports: actionedRes.count || 0,
+      dismissedReports: dismissedRes.count || 0,
+      enabledFlags: flagsRes.data?.filter((f) => f.enabled).length || 0,
+      totalFlags: flagsRes.data?.length || 0,
     });
   };
 
@@ -96,7 +124,7 @@ export default function AdminPanel() {
     const { error } = await supabase.from("profiles").update({ is_banned: true, ban_reason: banReason }).eq("id", banDialog.user.id);
     if (!error) {
       setUsers((prev) => prev.map((u) => u.id === banDialog.user!.id ? { ...u, is_banned: true } : u));
-      showMsg("success", `User banned`);
+      showMsg("success", "User banned");
     }
     setBanDialog({ open: false, user: null });
     setBanReason("");
@@ -120,25 +148,51 @@ export default function AdminPanel() {
     showMsg("success", "Role updated");
   };
 
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.toLowerCase();
+    if (!q) return users;
+    return users.filter((u) =>
+      (u.display_name || "").toLowerCase().includes(q) ||
+      u.id.toLowerCase().includes(q) ||
+      u.role.toLowerCase().includes(q)
+    );
+  }, [users, userSearch]);
+
+  const filteredReports = useMemo(() => {
+    const q = reportSearch.toLowerCase();
+    if (!q) return reports;
+    return reports.filter((r) =>
+      (r.reason || "").toLowerCase().includes(q) ||
+      (r.room_id || "").toLowerCase().includes(q) ||
+      (r.status || "").toLowerCase().includes(q)
+    );
+  }, [reports, reportSearch]);
+
   if (authLoading) return null;
   if (!profile || !["admin", "superadmin"].includes(profile.role)) return null;
 
   return (
     <Layout title="Admin Panel">
       <Container maxWidth="xl" sx={{ py: 4 }}>
-        <Box sx={{ display: "flex", alignItems: "center", mb: 4, gap: 2 }}>
+        <Box sx={{ display: "flex", alignItems: "center", mb: 4, gap: 2, flexWrap: "wrap" }}>
           <Typography variant="h4" fontWeight={800}>Admin Panel</Typography>
           <Chip label={profile.role.toUpperCase()} color="primary" />
+          <Box flex={1} />
+          <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => { loadStats(); if (tab === 1) loadUsers(); if (tab === 2) loadReports(); }}>
+            Refresh
+          </Button>
         </Box>
 
         {msg.text && <Alert severity={msg.type as any} sx={{ mb: 3 }}>{msg.text}</Alert>}
 
-        {/* Stats */}
+        {/* Stats cards */}
         {stats && (
           <Grid container spacing={2} sx={{ mb: 4 }}>
             {[
-              { label: "Total Users", value: stats.totalUsers, color: "primary.main", icon: <PeopleIcon /> },
-              { label: "Pending Reports", value: stats.pendingReports, color: "warning.main", icon: <FlagIcon /> },
+              { label: "Total Users", value: stats.totalUsers, color: "primary.main", icon: <PeopleIcon />, sub: `${stats.bannedUsers} banned` },
+              { label: "Pending Reports", value: stats.pendingReports, color: "warning.main", icon: <FlagIcon />, sub: `${stats.totalReports} total` },
+              { label: "Actioned Reports", value: stats.actionedReports, color: "error.main", icon: <FlagIcon />, sub: `${stats.dismissedReports} dismissed` },
+              { label: "Active Features", value: stats.enabledFlags, color: "success.main", icon: <SettingsIcon />, sub: `of ${stats.totalFlags} flags` },
             ].map((s) => (
               <Grid item xs={6} md={3} key={s.label}>
                 <Card>
@@ -146,7 +200,8 @@ export default function AdminPanel() {
                     <Box sx={{ color: s.color }}>{s.icon}</Box>
                     <Box>
                       <Typography variant="h5" fontWeight={700}>{s.value}</Typography>
-                      <Typography variant="caption" color="text.secondary">{s.label}</Typography>
+                      <Typography variant="caption" color="text.secondary" display="block">{s.label}</Typography>
+                      <Typography variant="caption" color="text.disabled">{s.sub}</Typography>
                     </Box>
                   </CardContent>
                 </Card>
@@ -159,6 +214,7 @@ export default function AdminPanel() {
           <Tab icon={<SettingsIcon />} label="Feature Flags" iconPosition="start" />
           <Tab icon={<PeopleIcon />} label="Users" iconPosition="start" />
           <Tab icon={<FlagIcon />} label="Reports" iconPosition="start" />
+          <Tab icon={<BarChartIcon />} label="Stats" iconPosition="start" />
         </Tabs>
 
         {/* Feature Flags */}
@@ -188,67 +244,78 @@ export default function AdminPanel() {
         {/* Users */}
         {tab === 1 && (
           <Box>
-            <Stack direction="row" justifyContent="flex-end" mb={2}>
+            <Stack direction="row" justifyContent="space-between" mb={2} gap={1} flexWrap="wrap">
+              <TextField
+                size="small" placeholder="Search by name, ID, or role…"
+                value={userSearch} onChange={(e) => setUserSearch(e.target.value)}
+                sx={{ minWidth: 260, "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+                InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+              />
               <IconButton onClick={loadUsers}><RefreshIcon /></IconButton>
             </Stack>
             {loadingData ? <CircularProgress /> : (
-              <TableContainer component={Paper}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Name</TableCell>
-                      <TableCell>Email</TableCell>
-                      <TableCell>Role</TableCell>
-                      <TableCell>Status</TableCell>
-                      <TableCell>Joined</TableCell>
-                      <TableCell>Actions</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {users.map((u) => (
-                      <TableRow key={u.id} hover>
-                        <TableCell>{u.display_name || "—"}</TableCell>
-                        <TableCell sx={{ fontSize: 12 }}>{u.id.slice(0, 8)}...</TableCell>
-                        <TableCell>
-                          {profile.role === "superadmin" ? (
-                            <Select size="small" value={u.role} onChange={(e) => changeUserRole(u.id, e.target.value)}
-                              sx={{ fontSize: 12 }}>
-                              {["user","moderator","admin","superadmin"].map((r) => (
-                                <MenuItem key={r} value={r}>{r}</MenuItem>
-                              ))}
-                            </Select>
-                          ) : (
-                            <Chip label={u.role} size="small" />
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Chip label={u.is_banned ? "Banned" : "Active"}
-                            color={u.is_banned ? "error" : "success"} size="small" />
-                        </TableCell>
-                        <TableCell sx={{ fontSize: 12 }}>
-                          {new Date(u.created_at).toLocaleDateString("en-IN")}
-                        </TableCell>
-                        <TableCell>
-                          {u.is_banned ? (
-                            <Tooltip title="Unban">
-                              <IconButton size="small" color="success" onClick={() => unbanUser(u.id)}>
-                                <CheckCircleIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                          ) : (
-                            <Tooltip title="Ban">
-                              <IconButton size="small" color="error"
-                                onClick={() => setBanDialog({ open: true, user: u })}>
-                                <BlockIcon fontSize="small" />
-                              </IconButton>
-                            </Tooltip>
-                          )}
-                        </TableCell>
+              <>
+                <Typography variant="caption" color="text.disabled" mb={1} display="block">
+                  {filteredUsers.length} of {users.length} users
+                </Typography>
+                <TableContainer component={Paper}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Name</TableCell>
+                        <TableCell>ID</TableCell>
+                        <TableCell>Role</TableCell>
+                        <TableCell>Status</TableCell>
+                        <TableCell>Joined</TableCell>
+                        <TableCell>Actions</TableCell>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+                    </TableHead>
+                    <TableBody>
+                      {filteredUsers.map((u) => (
+                        <TableRow key={u.id} hover>
+                          <TableCell>{u.display_name || "—"}</TableCell>
+                          <TableCell sx={{ fontSize: 11, fontFamily: "monospace" }}>{u.id.slice(0, 12)}…</TableCell>
+                          <TableCell>
+                            {profile.role === "superadmin" ? (
+                              <Select size="small" value={u.role} onChange={(e) => changeUserRole(u.id, e.target.value)}
+                                sx={{ fontSize: 12 }}>
+                                {["user","moderator","admin","superadmin"].map((r) => (
+                                  <MenuItem key={r} value={r}>{r}</MenuItem>
+                                ))}
+                              </Select>
+                            ) : (
+                              <Chip label={u.role} size="small" />
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Chip label={u.is_banned ? "Banned" : "Active"}
+                              color={u.is_banned ? "error" : "success"} size="small" />
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12 }}>
+                            {new Date(u.created_at).toLocaleDateString("en-IN")}
+                          </TableCell>
+                          <TableCell>
+                            {u.is_banned ? (
+                              <Tooltip title="Unban">
+                                <IconButton size="small" color="success" onClick={() => unbanUser(u.id)}>
+                                  <CheckCircleIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            ) : (
+                              <Tooltip title="Ban">
+                                <IconButton size="small" color="error"
+                                  onClick={() => setBanDialog({ open: true, user: u })}>
+                                  <BlockIcon fontSize="small" />
+                                </IconButton>
+                              </Tooltip>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </>
             )}
           </Box>
         )}
@@ -256,48 +323,168 @@ export default function AdminPanel() {
         {/* Reports */}
         {tab === 2 && (
           <Box>
-            <Stack direction="row" justifyContent="flex-end" mb={2}>
+            <Stack direction="row" justifyContent="space-between" mb={2} gap={1} flexWrap="wrap">
+              <TextField
+                size="small" placeholder="Search by reason, room ID, or status…"
+                value={reportSearch} onChange={(e) => setReportSearch(e.target.value)}
+                sx={{ minWidth: 280, "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+                InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
+              />
               <IconButton onClick={loadReports}><RefreshIcon /></IconButton>
             </Stack>
             {loadingData ? <CircularProgress /> : (
-              <TableContainer component={Paper}>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Reason</TableCell>
-                      <TableCell>Room</TableCell>
-                      <TableCell>Status</TableCell>
-                      <TableCell>Date</TableCell>
-                      <TableCell>Actions</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {reports.map((r) => (
-                      <TableRow key={r.id} hover>
-                        <TableCell>{r.reason}</TableCell>
-                        <TableCell sx={{ fontSize: 11 }}>{r.room_id?.slice(0, 8) || "—"}</TableCell>
-                        <TableCell>
-                          <Chip label={r.status} size="small"
-                            color={r.status === "pending" ? "warning" : r.status === "actioned" ? "error" : "default"} />
-                        </TableCell>
-                        <TableCell sx={{ fontSize: 12 }}>
-                          {new Date(r.created_at).toLocaleDateString("en-IN")}
-                        </TableCell>
-                        <TableCell>
-                          <Stack direction="row" spacing={0.5}>
-                            <Button size="small" onClick={() => updateReportStatus(r.id, "actioned")}
-                              disabled={r.status !== "pending"} color="error">Action</Button>
-                            <Button size="small" onClick={() => updateReportStatus(r.id, "dismissed")}
-                              disabled={r.status !== "pending"}>Dismiss</Button>
-                          </Stack>
-                        </TableCell>
+              <>
+                <Typography variant="caption" color="text.disabled" mb={1} display="block">
+                  {filteredReports.length} of {reports.length} reports
+                </Typography>
+                <TableContainer component={Paper}>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Reason</TableCell>
+                        <TableCell>Room</TableCell>
+                        <TableCell>Status</TableCell>
+                        <TableCell>Date</TableCell>
+                        <TableCell>Actions</TableCell>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableContainer>
+                    </TableHead>
+                    <TableBody>
+                      {filteredReports.map((r) => (
+                        <TableRow key={r.id} hover>
+                          <TableCell>{r.reason}</TableCell>
+                          <TableCell sx={{ fontSize: 11, fontFamily: "monospace" }}>{r.room_id?.slice(0, 10) || "—"}</TableCell>
+                          <TableCell>
+                            <Chip label={r.status} size="small"
+                              color={r.status === "pending" ? "warning" : r.status === "actioned" ? "error" : "default"} />
+                          </TableCell>
+                          <TableCell sx={{ fontSize: 12 }}>
+                            {new Date(r.created_at).toLocaleDateString("en-IN")}
+                          </TableCell>
+                          <TableCell>
+                            <Stack direction="row" spacing={0.5}>
+                              <Button size="small" onClick={() => updateReportStatus(r.id, "actioned")}
+                                disabled={r.status !== "pending"} color="error">Action</Button>
+                              <Button size="small" onClick={() => updateReportStatus(r.id, "dismissed")}
+                                disabled={r.status !== "pending"}>Dismiss</Button>
+                            </Stack>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              </>
             )}
           </Box>
+        )}
+
+        {/* Stats */}
+        {tab === 3 && stats && (
+          <Grid container spacing={3}>
+            {/* User breakdown */}
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Typography fontWeight={700} mb={2}>User Breakdown</Typography>
+                  {[
+                    { label: "Active users", value: stats.totalUsers - stats.bannedUsers, total: stats.totalUsers, color: "success.main" },
+                    { label: "Banned users", value: stats.bannedUsers, total: stats.totalUsers, color: "error.main" },
+                  ].map(({ label, value, total, color }) => (
+                    <Box key={label} mb={1.5}>
+                      <Stack direction="row" justifyContent="space-between" mb={0.5}>
+                        <Typography variant="body2">{label}</Typography>
+                        <Typography variant="body2" fontWeight={700} sx={{ color }}>{value}</Typography>
+                      </Stack>
+                      <LinearProgress
+                        variant="determinate"
+                        value={total > 0 ? (value / total) * 100 : 0}
+                        sx={{ height: 6, borderRadius: 3, bgcolor: "rgba(255,255,255,0.06)",
+                          "& .MuiLinearProgress-bar": { bgcolor: color, borderRadius: 3 } }}
+                      />
+                    </Box>
+                  ))}
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Report breakdown */}
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Typography fontWeight={700} mb={2}>Report Breakdown</Typography>
+                  {[
+                    { label: "Pending", value: stats.pendingReports, color: "warning.main" },
+                    { label: "Actioned", value: stats.actionedReports, color: "error.main" },
+                    { label: "Dismissed", value: stats.dismissedReports, color: "text.disabled" },
+                  ].map(({ label, value, color }) => (
+                    <Box key={label} mb={1.5}>
+                      <Stack direction="row" justifyContent="space-between" mb={0.5}>
+                        <Typography variant="body2">{label}</Typography>
+                        <Typography variant="body2" fontWeight={700} sx={{ color }}>{value}</Typography>
+                      </Stack>
+                      <LinearProgress
+                        variant="determinate"
+                        value={stats.totalReports > 0 ? (value / stats.totalReports) * 100 : 0}
+                        sx={{ height: 6, borderRadius: 3, bgcolor: "rgba(255,255,255,0.06)",
+                          "& .MuiLinearProgress-bar": { bgcolor: color, borderRadius: 3 } }}
+                      />
+                    </Box>
+                  ))}
+                  <Divider sx={{ my: 1.5, opacity: 0.1 }} />
+                  <Typography variant="caption" color="text.disabled">Total reports: {stats.totalReports}</Typography>
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Feature flags summary */}
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Typography fontWeight={700} mb={2}>Feature Flags</Typography>
+                  <Stack direction="row" spacing={3} mb={2}>
+                    <Box>
+                      <Typography variant="h4" fontWeight={800} color="success.main">{stats.enabledFlags}</Typography>
+                      <Typography variant="caption" color="text.secondary">Enabled</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="h4" fontWeight={800} color="text.disabled">{stats.totalFlags - stats.enabledFlags}</Typography>
+                      <Typography variant="caption" color="text.secondary">Disabled</Typography>
+                    </Box>
+                    <Box>
+                      <Typography variant="h4" fontWeight={800}>{stats.totalFlags}</Typography>
+                      <Typography variant="caption" color="text.secondary">Total</Typography>
+                    </Box>
+                  </Stack>
+                  <LinearProgress
+                    variant="determinate"
+                    value={stats.totalFlags > 0 ? (stats.enabledFlags / stats.totalFlags) * 100 : 0}
+                    sx={{ height: 8, borderRadius: 3, bgcolor: "rgba(255,255,255,0.06)",
+                      "& .MuiLinearProgress-bar": { bgcolor: "success.main", borderRadius: 3 } }}
+                  />
+                </CardContent>
+              </Card>
+            </Grid>
+
+            {/* Quick actions */}
+            <Grid item xs={12} md={6}>
+              <Card>
+                <CardContent>
+                  <Typography fontWeight={700} mb={2}>Quick Actions</Typography>
+                  <Stack spacing={1.5}>
+                    <Button variant="outlined" fullWidth startIcon={<PeopleIcon />} onClick={() => setTab(1)}>
+                      Manage Users ({stats.totalUsers})
+                    </Button>
+                    <Button variant="outlined" color="warning" fullWidth startIcon={<FlagIcon />} onClick={() => setTab(2)}>
+                      Review Pending Reports ({stats.pendingReports})
+                    </Button>
+                    <Button variant="outlined" color="inherit" fullWidth startIcon={<SettingsIcon />} onClick={() => setTab(0)}>
+                      Configure Feature Flags ({stats.enabledFlags}/{stats.totalFlags} on)
+                    </Button>
+                  </Stack>
+                </CardContent>
+              </Card>
+            </Grid>
+          </Grid>
         )}
       </Container>
 
