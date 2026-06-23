@@ -22,6 +22,7 @@ const FOOTER_LINKS = [
     links: [
       { label: "About Us", href: "/about" },
       { label: "Blog", href: "/blog" },
+      { label: "FAQ", href: "/faq" },
       { label: "Leaderboard", href: "/leaderboard" },
       { label: "Contact", href: "/contact" },
     ],
@@ -43,6 +44,7 @@ const FOOTER_LINKS = [
       { label: "Register", href: "/auth/register" },
       { label: "Profile", href: "/profile" },
       { label: "Friends", href: "/friends" },
+      { label: "Settings", href: "/settings" },
       { label: "Chat History", href: "/history" },
     ],
   },

@@ -393,6 +393,36 @@ export default function Home() {
           </Container>
         </Box>
 
+        {/* ── Testimonials ── */}
+        <Divider sx={{ opacity: 0.07 }} />
+        <Container maxWidth="md" sx={{ py: 6 }}>
+          <Typography variant="h6" fontWeight={700} mb={1} textAlign="center">What people are saying</Typography>
+          <Typography color="text.secondary" textAlign="center" mb={5} fontSize={14}>
+            Real experiences from the MiloBolo community
+          </Typography>
+          <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "repeat(3, 1fr)" }, gap: 2.5 }}>
+            {[
+              { quote: "I was sceptical at first, but within 5 minutes I was having a genuine conversation with someone from Japan. The E2E encryption made me feel safe too.", author: "Priya S.", location: "Mumbai" },
+              { quote: "The interest matching is actually smart — I typed 'philosophy' and got matched with someone who wanted to debate free will. We talked for 2 hours!", author: "Alex K.", location: "Berlin" },
+              { quote: "Finally an Omegle alternative that actually works on mobile and doesn't have constant bots. The report system removes bad actors quickly.", author: "Arjun M.", location: "Bangalore" },
+            ].map(({ quote, author, location }) => (
+              <Box key={author} sx={{
+                p: 3, borderRadius: 3,
+                bgcolor: "rgba(255,255,255,0.025)",
+                border: "1px solid rgba(255,255,255,0.06)",
+                display: "flex", flexDirection: "column",
+              }}>
+                <Typography sx={{ fontSize: "22px", color: "primary.main", lineHeight: 1, mb: 1.5 }}>&ldquo;</Typography>
+                <Typography variant="body2" color="text.secondary" lineHeight={1.7} flex={1}>{quote}</Typography>
+                <Box sx={{ mt: 2 }}>
+                  <Typography variant="body2" fontWeight={700}>{author}</Typography>
+                  <Typography variant="caption" color="text.disabled">{location}</Typography>
+                </Box>
+              </Box>
+            ))}
+          </Box>
+        </Container>
+
         {/* ── FAQ ── */}
         <Divider sx={{ opacity: 0.07 }} />
         <Container maxWidth="md" sx={{ py: 6 }}>

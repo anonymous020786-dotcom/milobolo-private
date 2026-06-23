@@ -1087,41 +1087,57 @@ export default function Chat() {
                   </Box>
                 )}
 
-                {messages.map((m) => (
-                  <Box key={m.id} sx={{ mb: 0.25, "&:hover .msg-actions": { opacity: 1 } }}>
-                    {m.from === "system" ? (
-                      <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13, userSelect: "text" }}>
-                        {m.text}
-                      </Typography>
-                    ) : (
-                      <Box sx={{ display: "flex", gap: 0.75, userSelect: "text", alignItems: "flex-start" }}>
-                        <Typography component="span" sx={{
-                          fontWeight: 700, flexShrink: 0, fontSize: "inherit",
-                          color: m.from === "me" ? "#6C63FF" : "#FF6584",
-                        }}>
-                          {m.from === "me" ? "You" : strangerLabel}:
+                {messages.map((m, i) => {
+                  const ts = new Date(m.ts).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
+                  const prevMsg = messages[i - 1];
+                  const showTs = !prevMsg || m.ts - prevMsg.ts > 60_000; // show time gap > 1 min
+                  return (
+                    <Box key={m.id}>
+                      {showTs && m.from !== "system" && (
+                        <Typography sx={{ color: "text.disabled", fontSize: 11, textAlign: "center", my: 0.75, userSelect: "none" }}>
+                          {ts}
                         </Typography>
-                        <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: "inherit", flex: 1 }}>
-                          {m.text}
-                          {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
-                        </Typography>
-                        <Tooltip title="Translate message">
-                          <IconButton
-                            className="msg-actions"
-                            size="small"
-                            sx={{ opacity: 0, transition: "opacity 0.15s", flexShrink: 0, p: 0.2 }}
-                            onClick={() => window.open(
-                              `https://translate.google.com/?sl=auto&tl=en&text=${encodeURIComponent(m.text)}&op=translate`,
-                              "_blank", "noopener,noreferrer"
-                            )}
-                          >
-                            <Typography sx={{ fontSize: 11 }}>🌐</Typography>
-                          </IconButton>
-                        </Tooltip>
+                      )}
+                      <Box sx={{ mb: 0.25, "&:hover .msg-actions": { opacity: 1 }, "&:hover .msg-ts": { opacity: 1 } }}>
+                        {m.from === "system" ? (
+                          <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13, userSelect: "text" }}>
+                            {m.text}
+                          </Typography>
+                        ) : (
+                          <Box sx={{ display: "flex", gap: 0.75, userSelect: "text", alignItems: "flex-start" }}>
+                            <Typography component="span" sx={{
+                              fontWeight: 700, flexShrink: 0, fontSize: "inherit",
+                              color: m.from === "me" ? "#6C63FF" : "#FF6584",
+                            }}>
+                              {m.from === "me" ? "You" : strangerLabel}:
+                            </Typography>
+                            <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: "inherit", flex: 1 }}>
+                              {m.text}
+                              {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
+                            </Typography>
+                            <Typography className="msg-ts" component="span"
+                              sx={{ fontSize: 10, color: "text.disabled", flexShrink: 0, alignSelf: "flex-end", opacity: 0, transition: "opacity 0.15s", pb: 0.1 }}>
+                              {ts}
+                            </Typography>
+                            <Tooltip title="Translate message">
+                              <IconButton
+                                className="msg-actions"
+                                size="small"
+                                sx={{ opacity: 0, transition: "opacity 0.15s", flexShrink: 0, p: 0.2 }}
+                                onClick={() => window.open(
+                                  `https://translate.google.com/?sl=auto&tl=en&text=${encodeURIComponent(m.text)}&op=translate`,
+                                  "_blank", "noopener,noreferrer"
+                                )}
+                              >
+                                <Typography sx={{ fontSize: 11 }}>🌐</Typography>
+                              </IconButton>
+                            </Tooltip>
+                          </Box>
+                        )}
                       </Box>
-                    )}
-                  </Box>
-                ))}
+                    </Box>
+                  );
+                })}
 
                 {peerTyping && (
                   <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>

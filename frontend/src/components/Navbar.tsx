@@ -114,6 +114,11 @@ export default function Navbar() {
                         <ListItemText primary="Profile" />
                       </ListItemButton>
                     </ListItem>
+                    <ListItem disablePadding>
+                      <ListItemButton onClick={() => { router.push("/settings"); setDrawerOpen(false); }}>
+                        <ListItemText primary="Settings" />
+                      </ListItemButton>
+                    </ListItem>
                     {profile?.role && ["admin","superadmin"].includes(profile.role) && (
                       <ListItem disablePadding>
                         <ListItemButton onClick={() => { router.push("/admin"); setDrawerOpen(false); }}>
@@ -173,6 +178,7 @@ export default function Navbar() {
                   </MenuItem>
                   <Divider />
                   <MenuItem onClick={() => { router.push("/profile"); setAnchorEl(null); }}>Profile</MenuItem>
+                  <MenuItem onClick={() => { router.push("/settings"); setAnchorEl(null); }}>Settings</MenuItem>
                   <MenuItem onClick={() => { router.push("/history"); setAnchorEl(null); }}>Chat History</MenuItem>
                   {profile?.role && ["admin","superadmin"].includes(profile.role) && (
                     <MenuItem onClick={() => { router.push("/admin"); setAnchorEl(null); }}>
