@@ -10,7 +10,7 @@ export const supabase = createPagesBrowserClient({
 });
 
 export const supabaseAdmin = () =>
-  createClient(supabaseUrl, supabaseAnonKey);
+  createClient(supabaseUrl, process.env.SUPABASE_SERVICE_KEY || supabaseAnonKey);
 
 export type Profile = {
   id: string;
@@ -21,10 +21,12 @@ export type Profile = {
   gender: string | null;
   country: string | null;
   is_banned: boolean;
+  ban_reason: string | null;
   is_verified: boolean;
   role: "user" | "moderator" | "admin" | "superadmin";
   total_chats: number;
   report_count: number;
+  allow_friend_requests: boolean;
   created_at: string;
 };
 

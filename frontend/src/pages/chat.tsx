@@ -40,6 +40,7 @@ import FriendRequestDialog from "@/components/chat/FriendRequestDialog";
 import { useFeatureFlags } from "@/context/FeatureFlagContext";
 import { useAuth } from "@/context/AuthContext";
 import { useFingerprint } from "@/hooks/useFingerprint";
+import { useSettings } from "@/hooks/useSettings";
 import { useVirtualBackground, BgMode } from "@/hooks/useVirtualBackground";
 import {
   generateKeyPair, deriveSharedKey,
@@ -87,6 +88,7 @@ export default function Chat() {
   const { isEnabled } = useFeatureFlags();
   const { user, profile } = useAuth();
   const fpId = useFingerprint();
+  const settings = useSettings();
 
   const mode = (router.query.mode as string) || "text";
   const initialInterests = router.query.interests
@@ -386,7 +388,7 @@ export default function Chat() {
       peerIdRef.current = peer;
       roomIdRef.current = rid;
       setState("connected");
-      playMatchSound();
+      if (settings.playMessageSound) playMatchSound();
       setSessionStart(Date.now());
       msgCountRef.current = 0;
       matchedInterestRef.current = mi;
@@ -467,7 +469,7 @@ export default function Chat() {
       msgCountRef.current += 1;
     });
 
-    socket.on("typing", ({ typing }) => setPeerTyping(typing));
+    socket.on("typing", ({ typing }) => { if (settings.showTypingIndicator) setPeerTyping(typing); });
     socket.on("reaction", ({ emoji }) => { setPeerReaction(emoji); setTimeout(() => setPeerReaction(null), 2500); });
     socket.on("peer_screen_share", ({ active }) => setPeerSharingScreen(active));
 
@@ -485,7 +487,7 @@ export default function Chat() {
     });
 
     socket.on("peer_left", async () => {
-      playDisconnectSound();
+      if (settings.playMessageSound) playDisconnectSound();
       setState("ended");
       window.dispatchEvent(new Event("milobolo:chat_ended"));
       setMessages((prev) => [...prev, {
@@ -1059,8 +1061,8 @@ export default function Chat() {
                 ref={messagesBoxRef}
                 onScroll={handleMsgScroll}
                 sx={{
-                  flex: 1, overflowY: "auto", px: { xs: 1.5, md: 2 }, py: 1.5,
-                  fontFamily: "monospace", fontSize: { xs: 13, md: 13.5 }, lineHeight: 1.75,
+                  flex: 1, overflowY: "auto", px: { xs: 1.5, md: 2 }, py: settings.compactChat ? 0.75 : 1.5,
+                  fontFamily: "monospace", fontSize: settings.compactChat ? 12 : { xs: 13, md: 13.5 }, lineHeight: settings.compactChat ? 1.4 : 1.75,
                   "&::-webkit-scrollbar": { width: 4 },
                   "&::-webkit-scrollbar-thumb": { bgcolor: "rgba(255,255,255,0.1)", borderRadius: 2 },
                 }}>
@@ -1098,7 +1100,7 @@ export default function Chat() {
                           {ts}
                         </Typography>
                       )}
-                      <Box sx={{ mb: 0.25, "&:hover .msg-actions": { opacity: 1 }, "&:hover .msg-ts": { opacity: 1 } }}>
+                      <Box sx={{ mb: settings.compactChat ? 0 : 0.25, "&:hover .msg-actions": { opacity: 1 }, "&:hover .msg-ts": { opacity: 1 } }}>
                         {m.from === "system" ? (
                           <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13, userSelect: "text" }}>
                             {m.text}

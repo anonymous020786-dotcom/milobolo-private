@@ -15,6 +15,7 @@ import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
 import OnlineCounter from "@/components/OnlineCounter";
 import { useFeatureFlags } from "@/context/FeatureFlagContext";
+import { useSettings } from "@/hooks/useSettings";
 
 const INTERESTS = [
   "Music", "Gaming", "Movies", "Sports", "Travel", "Food", "Technology",
@@ -85,8 +86,13 @@ function StatCard({ value, suffix, label, color }: { value: number; suffix: stri
 export default function Home() {
   const router = useRouter();
   const { isEnabled } = useFeatureFlags();
+  const appSettings = useSettings();
   const [interests, setInterests] = useState<string[]>([]);
-  const [language, setLanguage] = useState("");
+  const [language, setLanguage] = useState(() =>
+    typeof window !== "undefined"
+      ? (JSON.parse(localStorage.getItem("mb_settings") || "{}").defaultLanguage || "")
+      : ""
+  );
   const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
@@ -95,11 +101,12 @@ export default function Home() {
     }
   }, []);
 
-  const start = (mode: string) => {
+  const start = (mode?: string) => {
+    const m = mode || appSettings.defaultMode;
     const iStr = interests.length ? `&interests=${encodeURIComponent(interests.join(","))}` : "";
     const lStr = language ? `&lang=${language}` : "";
-    if (mode === "video") router.push(`/camera-test?mode=video${iStr}${lStr}`);
-    else router.push(`/chat?mode=${mode}${iStr}${lStr}`);
+    if (m === "video") router.push(`/camera-test?mode=video${iStr}${lStr}`);
+    else router.push(`/chat?mode=${m}${iStr}${lStr}`);
   };
 
   return (

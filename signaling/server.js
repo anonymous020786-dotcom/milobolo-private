@@ -262,7 +262,7 @@ async function getCountry(ip) {
   }
   if (countryCache.has(ip)) return countryCache.get(ip);
   try {
-    const r = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode,country`, { timeout: 2000 });
+    const r = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode,country`, { signal: AbortSignal.timeout(2000) });
     const d = await r.json();
     const result = { country: d.countryCode || "?", countryName: d.country || "Unknown", flag: countryToFlag(d.countryCode) };
     countryCache.set(ip, result);

@@ -7,9 +7,17 @@ export default function AuthCallback() {
   const router = useRouter();
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) router.push("/");
-      else router.push("/auth/login");
+    supabase.auth.getSession().then(async ({ data }) => {
+      if (!data.session) { router.push("/auth/login"); return; }
+
+      // After OAuth redirect, check if MFA step-up is required
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (aal?.nextLevel === "aal2" && aal.nextLevel !== aal.currentLevel) {
+        // User has TOTP enrolled; redirect to TOTP challenge page
+        router.push("/auth/mfa");
+      } else {
+        router.push("/");
+      }
     });
   }, [router]);
 
