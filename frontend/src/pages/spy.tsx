@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/router";
 import {
   Box, Container, Paper, Typography, Button, TextField, Stack,
-  Chip, CircularProgress, Snackbar, IconButton,
+  Chip, CircularProgress, Snackbar, IconButton, Collapse,
 } from "@mui/material";
 import SendIcon from "@mui/icons-material/Send";
 import SkipNextIcon from "@mui/icons-material/SkipNext";
@@ -21,20 +21,56 @@ interface Message {
   ts: number;
 }
 
-const SAMPLE_QUESTIONS = [
-  "Is social media making people more lonely or more connected?",
-  "Would you rather be rich and unhappy or poor and happy?",
-  "Is it ever okay to lie to protect someone's feelings?",
-  "What is more important — intelligence or kindness?",
-  "Should college education be free?",
-  "Is technology making humans less creative?",
-  "Does money buy happiness?",
-  "Is it better to be feared or respected?",
-];
+const QUESTION_CATEGORIES: Record<string, string[]> = {
+  "Philosophy": [
+    "Is it ever okay to lie to protect someone's feelings?",
+    "Does free will actually exist?",
+    "Is it better to be feared or respected?",
+    "What is more important — intelligence or kindness?",
+    "Is morality objective or subjective?",
+    "Can a truly evil person ever become good?",
+  ],
+  "Society": [
+    "Is social media making people more lonely or more connected?",
+    "Should college education be free?",
+    "Is cancel culture good or bad for society?",
+    "Do we rely too much on technology?",
+    "Should voting be mandatory?",
+    "Is nationalism a force for good or bad?",
+  ],
+  "Life & Values": [
+    "Would you rather be rich and unhappy or poor and happy?",
+    "Does money buy happiness?",
+    "Is technology making humans less creative?",
+    "What defines a successful life?",
+    "Is it selfish to prioritise yourself over others?",
+    "Should you follow your passion or follow the money?",
+  ],
+  "Relationships": [
+    "Can men and women just be friends?",
+    "Is jealousy a sign of love or insecurity?",
+    "Should couples share all passwords?",
+    "Is online friendship as real as in-person friendship?",
+    "Can you truly love someone you've never met in person?",
+    "Is it better to be honest or kind when giving feedback?",
+  ],
+  "Fun & Hypothetical": [
+    "If you could live anywhere in the world, where would it be?",
+    "Would you rather be able to fly or be invisible?",
+    "If you could have dinner with anyone in history, who would it be?",
+    "Would you rather know when you'll die or how you'll die?",
+    "If money was no object, what would you do all day?",
+    "What superpower would be most useful in everyday life?",
+  ],
+};
+
+const ALL_QUESTIONS = Object.values(QUESTION_CATEGORIES).flat();
+const SAMPLE_QUESTIONS = ALL_QUESTIONS.slice(0, 8);
 
 export default function SpyPage() {
   const router = useRouter();
   const [role, setRole] = useState<"spy" | "chatter" | null>(null);
+  const [questionCat, setQuestionCat] = useState<string>("Philosophy");
   const [question, setQuestion] = useState("");
   const [spyState, setSpyState] = useState<SpyState>("idle");
   const [spyRole, setSpyRole] = useState<SpyRole>(null);
@@ -201,12 +237,36 @@ export default function SpyPage() {
                 onChange={(e) => setQuestion(e.target.value)}
                 sx={{ mb: 1.5, "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
               />
-              {/* Sample questions */}
-              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75, mb: 2 }}>
-                {SAMPLE_QUESTIONS.slice(0, 4).map((q) => (
-                  <Chip key={q} label={q} size="small" variant="outlined" onClick={() => setQuestion(q)}
-                    sx={{ fontSize: 11, cursor: "pointer", "&:hover": { bgcolor: "rgba(108,99,255,0.1)" } }} />
-                ))}
+              {/* Category + sample questions */}
+              <Box sx={{ mb: 2 }}>
+                <Stack direction="row" spacing={0.75} flexWrap="wrap" gap={0.75} mb={1.5}>
+                  {Object.keys(QUESTION_CATEGORIES).map((cat) => (
+                    <Chip
+                      key={cat} label={cat} size="small"
+                      onClick={() => setQuestionCat(cat)}
+                      color={questionCat === cat ? "primary" : "default"}
+                      variant={questionCat === cat ? "filled" : "outlined"}
+                      sx={{ cursor: "pointer", fontSize: 11 }}
+                    />
+                  ))}
+                </Stack>
+                <Collapse in={!!questionCat}>
+                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.75 }}>
+                    {(QUESTION_CATEGORIES[questionCat] || []).map((q) => (
+                      <Chip
+                        key={q} label={q} size="small" variant="outlined"
+                        onClick={() => setQuestion(q)}
+                        sx={{
+                          fontSize: 11, cursor: "pointer", maxWidth: "100%",
+                          height: "auto", "& .MuiChip-label": { whiteSpace: "normal", py: 0.5 },
+                          "&:hover": { bgcolor: "rgba(108,99,255,0.1)" },
+                          borderColor: question === q ? "primary.main" : undefined,
+                          bgcolor: question === q ? "rgba(108,99,255,0.15)" : undefined,
+                        }}
+                      />
+                    ))}
+                  </Box>
+                </Collapse>
               </Box>
               <Button fullWidth variant="contained" size="large" startIcon={<VisibilityIcon />}
                 onClick={startAsSpy} sx={{ borderRadius: 2, py: 1.4 }}>

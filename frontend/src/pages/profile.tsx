@@ -4,16 +4,99 @@ import {
   Box, Container, Grid, Card, CardContent, Typography, TextField, Button,
   Avatar, Alert, CircularProgress, Divider, Dialog, DialogTitle,
   DialogContent, DialogActions, Tab, Tabs, Chip, IconButton, Tooltip,
+  LinearProgress, Stack,
 } from "@mui/material";
 import CameraAltIcon from "@mui/icons-material/CameraAlt";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
 import LockIcon from "@mui/icons-material/Lock";
+import ChatIcon from "@mui/icons-material/Chat";
+import VideocamIcon from "@mui/icons-material/Videocam";
+import AccessTimeIcon from "@mui/icons-material/AccessTime";
 import Layout from "@/components/Layout";
 import OtpInput from "@/components/auth/OtpInput";
 import { useAuth } from "@/context/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { useOtp } from "@/hooks/useOtp";
 import axios from "axios";
+
+function fmtTime(s: number) {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function ChatStatsCard({ userId }: { userId: string }) {
+  const [stats, setStats] = useState<{
+    total: number; video: number; text: number;
+    totalSeconds: number; avgSeconds: number;
+  } | null>(null);
+
+  useEffect(() => {
+    supabase
+      .from("chat_history")
+      .select("mode, duration_seconds")
+      .eq("user_id", userId)
+      .then(({ data }) => {
+        if (!data) return;
+        const total = data.length;
+        const video = data.filter((r) => r.mode === "video").length;
+        const text = data.filter((r) => r.mode === "text").length;
+        const totalSeconds = data.reduce((a, r) => a + (r.duration_seconds || 0), 0);
+        setStats({ total, video, text, totalSeconds, avgSeconds: total ? Math.round(totalSeconds / total) : 0 });
+      });
+  }, [userId]);
+
+  if (!stats || stats.total === 0) return null;
+
+  return (
+    <Card sx={{ mt: 2 }}>
+      <CardContent sx={{ p: 3 }}>
+        <Typography variant="h6" fontWeight={600} mb={2.5} sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <AccessTimeIcon fontSize="small" /> Chat Stats
+        </Typography>
+        <Grid container spacing={2} mb={2}>
+          {[
+            { icon: <ChatIcon sx={{ fontSize: 18 }} />, label: "Total Chats", value: stats.total, color: "primary.main" },
+            { icon: <VideocamIcon sx={{ fontSize: 18 }} />, label: "Video Chats", value: stats.video, color: "#6C63FF" },
+            { icon: <ChatIcon sx={{ fontSize: 18 }} />, label: "Text Chats", value: stats.text, color: "#FF6584" },
+            { icon: <AccessTimeIcon sx={{ fontSize: 18 }} />, label: "Total Time", value: fmtTime(stats.totalSeconds), color: "success.main" },
+          ].map(({ icon, label, value, color }) => (
+            <Grid item xs={6} key={label}>
+              <Box sx={{ p: 1.5, bgcolor: "rgba(255,255,255,0.03)", borderRadius: 2, border: "1px solid rgba(255,255,255,0.06)" }}>
+                <Stack direction="row" spacing={0.75} alignItems="center" mb={0.5}>
+                  <Box sx={{ color }}>{icon}</Box>
+                  <Typography variant="caption" color="text.secondary">{label}</Typography>
+                </Stack>
+                <Typography fontWeight={700} fontSize={20}>{value}</Typography>
+              </Box>
+            </Grid>
+          ))}
+        </Grid>
+        {stats.total > 0 && (
+          <Box>
+            <Stack direction="row" justifyContent="space-between" mb={0.5}>
+              <Typography variant="caption" color="text.secondary">Video vs Text split</Typography>
+              <Typography variant="caption" color="text.disabled">{stats.video} / {stats.text}</Typography>
+            </Stack>
+            <LinearProgress
+              variant="determinate"
+              value={stats.total > 0 ? (stats.video / stats.total) * 100 : 0}
+              sx={{
+                height: 6, borderRadius: 3, bgcolor: "rgba(255,101,132,0.2)",
+                "& .MuiLinearProgress-bar": { bgcolor: "#6C63FF", borderRadius: 3 },
+              }}
+            />
+            <Stack direction="row" justifyContent="space-between" mt={0.5}>
+              <Typography variant="caption" color="text.disabled" sx={{ color: "#6C63FF" }}>● Video</Typography>
+              <Typography variant="caption" color="text.disabled" sx={{ color: "#FF6584" }}>● Text</Typography>
+            </Stack>
+          </Box>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Profile() {
   const router = useRouter();
@@ -172,6 +255,9 @@ export default function Profile() {
                   </Button>
                 </CardContent>
               </Card>
+
+              {/* Chat Stats */}
+              <ChatStatsCard userId={user.id} />
             </Grid>
           </Grid>
         )}

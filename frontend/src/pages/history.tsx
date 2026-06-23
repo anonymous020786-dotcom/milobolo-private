@@ -1,15 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/router";
 import {
   Box, Container, Typography, Card, CardContent, Chip, Stack,
-  CircularProgress, Divider, IconButton, Tooltip, Alert,
+  CircularProgress, IconButton, Tooltip, Alert,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper,
+  TextField, InputAdornment, ToggleButton, ToggleButtonGroup,
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import FileDownloadIcon from "@mui/icons-material/FileDownload";
 import ChatIcon from "@mui/icons-material/Chat";
 import VideocamIcon from "@mui/icons-material/Videocam";
+import SearchIcon from "@mui/icons-material/Search";
 import Layout from "@/components/Layout";
 import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
@@ -30,6 +32,8 @@ export default function ChatHistory() {
   const [records, setRecords] = useState<ChatRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ total: 0, totalTime: 0, videoChats: 0, textChats: 0 });
+  const [search, setSearch] = useState("");
+  const [modeFilter, setModeFilter] = useState<"all" | "video" | "text">("all");
 
   useEffect(() => {
     if (!authLoading && !user) router.push("/auth/login?next=/history");
@@ -42,7 +46,7 @@ export default function ChatHistory() {
       .select("*")
       .eq("user_id", user.id)
       .order("started_at", { ascending: false })
-      .limit(100)
+      .limit(200)
       .then(({ data }) => {
         if (data) {
           setRecords(data);
@@ -56,6 +60,15 @@ export default function ChatHistory() {
         setLoading(false);
       });
   }, [user]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return records.filter((r) => {
+      const matchMode = modeFilter === "all" || r.mode === modeFilter;
+      const matchSearch = !q || (r.matched_interest || "").toLowerCase().includes(q);
+      return matchMode && matchSearch;
+    });
+  }, [records, search, modeFilter]);
 
   const deleteRecord = async (id: string) => {
     await supabase.from("chat_history").delete().eq("id", id).eq("user_id", user!.id);
@@ -71,7 +84,7 @@ export default function ChatHistory() {
 
   const exportCsv = () => {
     const header = "Mode,Duration (s),Messages,Matched Interest,Date";
-    const rows = records.map((r) =>
+    const rows = filtered.map((r) =>
       [r.mode, r.duration_seconds, r.message_count, r.matched_interest || "", r.started_at].join(",")
     );
     const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
@@ -97,7 +110,7 @@ export default function ChatHistory() {
           <Typography variant="h4" fontWeight={800}>Chat History</Typography>
           {records.length > 0 && (
             <Stack direction="row" spacing={1}>
-              <Tooltip title="Export as CSV">
+              <Tooltip title="Export filtered rows as CSV">
                 <IconButton onClick={exportCsv} size="small"><FileDownloadIcon /></IconButton>
               </Tooltip>
               <Tooltip title="Clear all history">
@@ -116,7 +129,7 @@ export default function ChatHistory() {
             { label: "Text Chats", value: stats.textChats },
           ].map((s) => (
             <Card key={s.label} sx={{ flex: 1 }}>
-              <CardContent sx={{ textAlign: "center" }}>
+              <CardContent sx={{ textAlign: "center", py: 2 }}>
                 <Typography variant="h4" fontWeight={800} color="primary.main">{s.value}</Typography>
                 <Typography variant="caption" color="text.secondary">{s.label}</Typography>
               </CardContent>
@@ -128,12 +141,45 @@ export default function ChatHistory() {
           Chat messages are end-to-end encrypted and never stored. Only session metadata is saved here.
         </Alert>
 
+        {/* Search + mode filter */}
+        {records.length > 0 && (
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} mb={2} alignItems={{ sm: "center" }}>
+            <TextField
+              size="small"
+              placeholder="Search by interest…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              sx={{ flex: 1, maxWidth: 320, "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+              InputProps={{
+                startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" sx={{ color: "text.disabled" }} /></InputAdornment>,
+              }}
+            />
+            <ToggleButtonGroup
+              value={modeFilter}
+              exclusive
+              onChange={(_, v) => { if (v) setModeFilter(v); }}
+              size="small"
+            >
+              <ToggleButton value="all">All</ToggleButton>
+              <ToggleButton value="video"><VideocamIcon sx={{ fontSize: 16, mr: 0.5 }} />Video</ToggleButton>
+              <ToggleButton value="text"><ChatIcon sx={{ fontSize: 16, mr: 0.5 }} />Text</ToggleButton>
+            </ToggleButtonGroup>
+            <Typography variant="caption" color="text.disabled" sx={{ alignSelf: "center" }}>
+              {filtered.length} of {records.length} records
+            </Typography>
+          </Stack>
+        )}
+
         {loading ? (
           <Box sx={{ textAlign: "center", py: 8 }}><CircularProgress /></Box>
         ) : records.length === 0 ? (
           <Box sx={{ textAlign: "center", py: 8 }}>
             <ChatIcon sx={{ fontSize: 64, color: "text.secondary", mb: 2 }} />
             <Typography color="text.secondary">No chat history yet. Start chatting!</Typography>
+          </Box>
+        ) : filtered.length === 0 ? (
+          <Box sx={{ textAlign: "center", py: 6 }}>
+            <Typography color="text.secondary">No records match your filters.</Typography>
           </Box>
         ) : (
           <TableContainer component={Paper}>
@@ -149,12 +195,12 @@ export default function ChatHistory() {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {records.map((r) => (
+                {filtered.map((r) => (
                   <TableRow key={r.id} hover>
                     <TableCell>
                       <Chip
                         icon={r.mode === "video" ? <VideocamIcon /> : <ChatIcon />}
-                        label={r.mode === "video" ? "Video" : "Text"}
+                        label={r.mode === "video" ? "Video" : r.mode === "text" ? "Text" : r.mode}
                         size="small"
                         color={r.mode === "video" ? "primary" : "default"}
                       />

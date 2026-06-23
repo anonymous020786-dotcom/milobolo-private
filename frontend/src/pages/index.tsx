@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/router";
 import Head from "next/head";
 import Link from "next/link";
@@ -40,6 +40,47 @@ const LANGUAGES = [
   { code: "tr", label: "Turkish" },
   { code: "it", label: "Italian" },
 ];
+
+function useCountUp(target: number, duration = 1800, trigger: boolean) {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!trigger) return;
+    let start = 0;
+    const step = target / (duration / 16);
+    const timer = setInterval(() => {
+      start += step;
+      if (start >= target) { setCount(target); clearInterval(timer); }
+      else setCount(Math.floor(start));
+    }, 16);
+    return () => clearInterval(timer);
+  }, [target, duration, trigger]);
+  return count;
+}
+
+function StatCard({ value, suffix, label, color }: { value: number; suffix: string; label: string; color: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const count = useCountUp(value, 1600, visible);
+
+  useEffect(() => {
+    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) setVisible(true); }, { threshold: 0.3 });
+    if (ref.current) obs.observe(ref.current);
+    return () => obs.disconnect();
+  }, []);
+
+  return (
+    <Box ref={ref} sx={{ textAlign: "center", px: 2, py: 1 }}>
+      <Typography variant="h3" fontWeight={900} sx={{
+        background: `linear-gradient(135deg, ${color}, #fff)`,
+        WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent",
+        lineHeight: 1,
+      }}>
+        {count.toLocaleString()}{suffix}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" mt={0.5}>{label}</Typography>
+    </Box>
+  );
+}
 
 export default function Home() {
   const router = useRouter();
@@ -293,6 +334,20 @@ export default function Home() {
             ))}
           </Stack>
         </Container>
+
+        {/* ── Animated Stats ── */}
+        <Divider sx={{ opacity: 0.07 }} />
+        <Box sx={{ py: 5, bgcolor: "rgba(108,99,255,0.04)" }}>
+          <Container maxWidth="md">
+            <Typography variant="h6" fontWeight={700} textAlign="center" mb={4}>MiloBolo by the numbers</Typography>
+            <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" }, gap: 2 }}>
+              <StatCard value={190} suffix="+" label="Countries connected" color="#6C63FF" />
+              <StatCard value={3} suffix="" label="Chat modes" color="#FF6584" />
+              <StatCard value={70} suffix="+" label="Themes & a11y features" color="#22c55e" />
+              <StatCard value={100} suffix="%" label="Free forever" color="#f59e0b" />
+            </Box>
+          </Container>
+        </Box>
 
         {/* ── FAQ ── */}
         <Divider sx={{ opacity: 0.07 }} />
