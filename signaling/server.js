@@ -11,6 +11,13 @@ const { v4: uuidv4 } = require("uuid");
 const fetch = require("node-fetch");
 const mailer = require("./lib/mailer");
 const rateLimiter = require("./lib/rateLimiter");
+const BadWordsFilter = require("bad-words");
+
+const profanityFilter = new BadWordsFilter();
+// Warn at startup if NSFW image API keys are missing
+if (!process.env.SIGHTENGINE_USER || !process.env.SIGHTENGINE_SECRET) {
+  console.warn("[moderation] SIGHTENGINE_USER/SECRET not set — image NSFW check disabled");
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -630,9 +637,13 @@ io.on("connection", async (socket) => {
       return;
     }
     if (!rid) return;
+    let cleanText = (plain || "").slice(0, 500);
+    if (!ciphertext && cleanText) {
+      try { cleanText = profanityFilter.clean(cleanText); } catch {}
+    }
     const payload = ciphertext
       ? { from: socket.id, ciphertext, iv, ts: Date.now(), encrypted: true, senderRole: senderRole || null }
-      : { from: socket.id, text: (plain || "").slice(0, 500), ts: Date.now(), encrypted: false, senderRole: senderRole || null };
+      : { from: socket.id, text: cleanText, ts: Date.now(), encrypted: false, senderRole: senderRole || null };
     socket.to(rid).emit("message", payload);
   });
 
@@ -711,12 +722,37 @@ io.on("connection", async (socket) => {
   // ── Report ──────────────────────────────────────────────
   socket.on("report", async ({ reportedId, reason, screenshotB64 }) => {
     if (!reportedId || !reason) return;
+
+    const peerMeta = memSocketMeta[reportedId] || {};
+    const reportedUserId = peerMeta.userId || null;
+
     await supabase.from("reports").insert({
       reporter_socket: socket.id,
       reported_socket: reportedId,
+      reported_user_id: reportedUserId,
       reason, room_id: roomId,
       screenshot_b64: screenshotB64 || null,
     });
+
+    // Increment report_count and auto-ban at threshold (10+ reports)
+    if (reportedUserId) {
+      const { data: profile } = await supabase
+        .from("profiles").select("report_count, is_banned")
+        .eq("id", reportedUserId).single();
+      if (profile && !profile.is_banned) {
+        const newCount = (profile.report_count || 0) + 1;
+        const shouldBan = newCount >= 10;
+        await supabase.from("profiles").update({
+          report_count: newCount,
+          ...(shouldBan ? { is_banned: true, ban_reason: "Auto-banned: received 10+ reports" } : {}),
+        }).eq("id", reportedUserId);
+        if (shouldBan) {
+          io.to(reportedId).emit("banned", { reason: "You have been banned following multiple reports." });
+          io.sockets.sockets.get(reportedId)?.disconnect(true);
+        }
+      }
+    }
+
     socket.emit("report_received");
   });
 
