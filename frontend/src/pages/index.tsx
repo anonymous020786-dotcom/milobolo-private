@@ -4,11 +4,13 @@ import Head from "next/head";
 import Link from "next/link";
 import {
   Box, Typography, Button, TextField, Stack, Chip,
-  Autocomplete, Container, Divider,
+  Autocomplete, Container, Divider, FormControl,
+  InputLabel, Select, MenuItem, Collapse, Tooltip,
 } from "@mui/material";
 import VideoCallIcon from "@mui/icons-material/VideoCall";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
+import TuneIcon from "@mui/icons-material/Tune";
 import OnlineCounter from "@/components/OnlineCounter";
 import { useFeatureFlags } from "@/context/FeatureFlagContext";
 
@@ -16,12 +18,33 @@ const INTERESTS = [
   "Music", "Gaming", "Movies", "Sports", "Travel", "Food", "Technology",
   "Art", "Books", "Fitness", "Photography", "Dance", "Comedy", "Science",
   "Fashion", "Anime", "Cricket", "Bollywood", "K-Pop", "Coding",
+  "Language Exchange", "Mental Health", "LGBTQ+", "Startup", "Philosophy",
+  "History", "Cooking", "Yoga", "Meditation", "Drawing", "Writing",
+];
+
+const LANGUAGES = [
+  { code: "", label: "Any Language" },
+  { code: "en", label: "English" },
+  { code: "hi", label: "Hindi" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "pt", label: "Portuguese" },
+  { code: "ar", label: "Arabic" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "zh", label: "Chinese" },
+  { code: "ru", label: "Russian" },
+  { code: "tr", label: "Turkish" },
+  { code: "it", label: "Italian" },
 ];
 
 export default function Home() {
   const router = useRouter();
   const { isEnabled } = useFeatureFlags();
   const [interests, setInterests] = useState<string[]>([]);
+  const [language, setLanguage] = useState("");
+  const [showFilters, setShowFilters] = useState(false);
 
   useEffect(() => {
     if (localStorage.getItem("mb_tos") !== "1") {
@@ -31,8 +54,9 @@ export default function Home() {
 
   const start = (mode: string) => {
     const iStr = interests.length ? `&interests=${encodeURIComponent(interests.join(","))}` : "";
-    if (mode === "video") router.push(`/camera-test?mode=video${iStr}`);
-    else router.push(`/chat?mode=${mode}${iStr}`);
+    const lStr = language ? `&lang=${language}` : "";
+    if (mode === "video") router.push(`/camera-test?mode=video${iStr}${lStr}`);
+    else router.push(`/chat?mode=${mode}${iStr}${lStr}`);
   };
 
   return (
@@ -111,6 +135,36 @@ export default function Home() {
             />
           )}
 
+          {/* Filters toggle */}
+          <Stack direction="row" justifyContent="flex-end" mb={0.5}>
+            <Button
+              size="small"
+              variant={showFilters ? "contained" : "text"}
+              startIcon={<TuneIcon fontSize="small" />}
+              onClick={() => setShowFilters((x) => !x)}
+              sx={{ color: showFilters ? undefined : "text.disabled", fontSize: 12 }}
+            >
+              Filters
+            </Button>
+          </Stack>
+
+          <Collapse in={showFilters}>
+            <Box mb={1.5}>
+              <FormControl fullWidth size="small" sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2, bgcolor: "rgba(255,255,255,0.04)" } }}>
+                <InputLabel>Language Preference</InputLabel>
+                <Select
+                  value={language}
+                  label="Language Preference"
+                  onChange={(e) => setLanguage(e.target.value)}
+                >
+                  {LANGUAGES.map((l) => (
+                    <MenuItem key={l.code} value={l.code}>{l.label}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Box>
+          </Collapse>
+
           {/* Main buttons */}
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mb: 1.5 }}>
             {isEnabled("video_chat") && (
@@ -174,12 +228,16 @@ export default function Home() {
 
           <Stack direction="row" flexWrap="wrap" justifyContent="center" gap={2} mt={4}>
             {[
-              ["🔒", "End-to-end encrypted"],
-              ["⚡", "Matched instantly"],
+              ["🔒", "E2E encrypted"],
+              ["⚡", "Instant matching"],
               ["🎭", "Fully anonymous"],
               ["🌍", "Interest matching"],
               ["🕵️", "Spy Mode"],
-              ["📱", "Works on mobile"],
+              ["📱", "Mobile ready"],
+              ["🎨", "70+ themes"],
+              ["♿", "70+ a11y features"],
+              ["🆓", "Always free"],
+              ["🌐", "190+ countries"],
             ].map(([icon, label]) => (
               <Chip key={label} label={`${icon} ${label}`} variant="outlined"
                 sx={{ borderColor: "rgba(255,255,255,0.1)", color: "text.secondary", fontSize: 13 }} />
@@ -188,16 +246,19 @@ export default function Home() {
         </Container>
 
         {/* ── Footer ── */}
-        <Box component="footer" sx={{ borderTop: "1px solid rgba(255,255,255,0.06)", py: 2.5 }}>
-          <Container maxWidth="md">
-            <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="center" spacing={1}>
-              <Typography variant="caption" color="text.disabled">© {new Date().getFullYear()} MiloBolo — Always free</Typography>
-              <Stack direction="row" spacing={2.5}>
+        <Box component="footer" sx={{ borderTop: "1px solid rgba(255,255,255,0.06)", py: 3 }}>
+          <Container maxWidth="lg">
+            <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems="center" spacing={1.5} flexWrap="wrap" gap={1}>
+              <Typography variant="caption" color="text.disabled">© {new Date().getFullYear()} MiloBolo — Always free forever</Typography>
+              <Stack direction="row" spacing={2} flexWrap="wrap" justifyContent="center" gap={1}>
                 {[
-                  { label: "Terms", href: "/terms" },
+                  { label: "About", href: "/about" },
+                  { label: "Blog", href: "/blog" },
+                  { label: "Contact", href: "/contact" },
+                  { label: "Guidelines", href: "/guidelines" },
                   { label: "Privacy", href: "/privacy" },
-                  { label: "Spy Mode", href: "/spy" },
-                  { label: "Camera Test", href: "/camera-test" },
+                  { label: "Terms", href: "/terms" },
+                  { label: "Cookies", href: "/cookies" },
                 ].map((l) => (
                   <Link key={l.href} href={l.href}
                     style={{ color: "rgba(255,255,255,0.35)", fontSize: 12, textDecoration: "none" }}>

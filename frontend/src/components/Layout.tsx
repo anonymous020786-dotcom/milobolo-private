@@ -1,6 +1,7 @@
 import { ReactNode } from "react";
 import { Box } from "@mui/material";
 import Navbar from "./Navbar";
+import Footer from "./Footer";
 import FloatingToolbar from "./FloatingToolbar";
 import { DefaultSeo } from "next-seo";
 
@@ -32,6 +33,7 @@ export default function Layout({ children, title, description, noNav }: LayoutPr
         <Box component="main" sx={{ flex: 1 }}>
           {children}
         </Box>
+        <Footer />
         <FloatingToolbar />
       </Box>
     </>
