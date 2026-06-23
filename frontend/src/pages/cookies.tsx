@@ -1,4 +1,5 @@
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Box, Chip, Container, Divider, Paper, Stack, Table,
   TableBody, TableCell, TableHead, TableRow, Typography,
@@ -31,6 +32,7 @@ export default function CookiesPage() {
       title="Cookie Policy"
       description="MiloBolo's complete cookie policy — what we store, why, and how to manage your cookie preferences."
     >
+      <SeoHead title="Cookie Policy" description="MiloBolo's complete cookie policy — what we store, why, and how to manage your cookie preferences." path="/cookies" />
       <Container maxWidth="md" sx={{ py: { xs: 5, md: 8 } }}>
         <Stack direction="row" spacing={1.5} alignItems="center" mb={1}>
           <CookieIcon color="warning" sx={{ fontSize: 32 }} />

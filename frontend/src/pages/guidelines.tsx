@@ -1,4 +1,5 @@
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Box, Chip, Container, Divider, Paper, Stack, Typography, useTheme,
 } from "@mui/material";
@@ -48,6 +49,7 @@ export default function GuidelinesPage() {
       title="Community Guidelines"
       description="MiloBolo's community standards — what is allowed, what is prohibited, and how we enforce our rules to keep everyone safe."
     >
+      <SeoHead title="Community Guidelines" description="MiloBolo's community standards — what is allowed, what is prohibited, and how we enforce our rules to keep everyone safe." path="/guidelines" />
       <Container maxWidth="md" sx={{ py: { xs: 5, md: 8 } }}>
         <Stack direction="row" spacing={1.5} alignItems="center" mb={1}>
           <GavelIcon color="primary" sx={{ fontSize: 32 }} />

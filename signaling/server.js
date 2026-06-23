@@ -47,6 +47,7 @@ app.use(express.json({ limit: "10kb" }));
 // ─── HTTP rate limiters ─────────────────────────────────────
 const httpLimiter = rateLimiter.createHttpLimiter(redis);
 const otpLimiter = rateLimiter.createOtpLimiter(redis);
+const contactLimiter = rateLimiter.createContactLimiter(redis);
 
 app.use("/api/send-otp", (req, res, next) => {
   otpLimiter.consume(req.ip)
@@ -116,7 +117,17 @@ app.get("/api/online-count", async (req, res) => {
 });
 
 // ─── Contact form ────────────────────────────────────────────
-app.post("/api/contact", async (req, res) => {
+app.post("/api/contact", async (req, res, next) => {
+  contactLimiter.consume(req.ip)
+    .then(() => next())
+    .catch((e) => {
+      if (e && e.msBeforeNext != null) {
+        const retryAfter = Math.ceil(e.msBeforeNext / 1000 / 60);
+        return res.status(429).json({ error: `Too many contact submissions. Try again in ${retryAfter} minute${retryAfter !== 1 ? "s" : ""}.` });
+      }
+      next();
+    });
+}, async (req, res) => {
   const { name, email, subject, message, recaptchaToken } = req.body || {};
   if (!name || !email || !message) return res.status(400).json({ error: "Missing required fields." });
   if (typeof email !== "string" || !email.includes("@")) return res.status(400).json({ error: "Invalid email." });

@@ -10,6 +10,7 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import ChatIcon from "@mui/icons-material/Chat";
 import { io, Socket } from "socket.io-client";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 
 type SpyState = "idle" | "waiting" | "active" | "ended";
 type SpyRole = "spy" | "chatter_a" | "chatter_b" | null;
@@ -209,6 +210,7 @@ export default function SpyPage() {
 
   return (
     <Layout title="Spy Mode">
+      <SeoHead title="Spy / Question Mode" description="Ask a question and watch two strangers debate it — or join as a stranger and discuss a question live. Free, anonymous spy mode on MiloBolo." path="/spy" />
       <Container maxWidth="md" sx={{ py: { xs: 2, md: 4 } }}>
         {/* Header */}
         <Box sx={{ textAlign: "center", mb: 4 }}>

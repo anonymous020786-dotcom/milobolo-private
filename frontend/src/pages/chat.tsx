@@ -470,6 +470,7 @@ export default function Chat() {
     socket.on("peer_left", async () => {
       playDisconnectSound();
       setState("ended");
+      window.dispatchEvent(new Event("milobolo:chat_ended"));
       setMessages((prev) => [...prev, {
         id: "sys-end", from: "system",
         text: "Your conversational partner has disconnected.",

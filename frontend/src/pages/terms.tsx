@@ -1,4 +1,5 @@
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Box, Chip, Container, Divider, Stack, Typography,
 } from "@mui/material";
@@ -12,6 +13,7 @@ export default function TermsPage() {
       title="Terms of Service"
       description="MiloBolo Terms of Service — your rights and responsibilities as a user of our free random chat platform."
     >
+      <SeoHead title="Terms of Service" description="MiloBolo Terms of Service — your rights and responsibilities as a user of our free random chat platform." path="/terms" />
       <Container maxWidth="md" sx={{ py: { xs: 5, md: 8 } }}>
         <Stack direction="row" spacing={1.5} alignItems="center" mb={1}>
           <GavelIcon color="primary" sx={{ fontSize: 32 }} />

@@ -13,6 +13,7 @@ import PWAInstallBanner from "@/components/PWAInstallBanner";
 import CookieConsent from "@/components/CookieConsent";
 import WelcomeModal from "@/components/WelcomeModal";
 import KeyboardShortcutsModal from "@/components/KeyboardShortcutsModal";
+import PushPrompt from "@/components/PushPrompt";
 import "@/styles/accessibility.css";
 
 const GA_ID = process.env.NEXT_PUBLIC_GA_ID;
@@ -48,6 +49,7 @@ function ThemedApp({ Component, pageProps }: AppProps) {
             <CookieConsent />
             <WelcomeModal />
             <KeyboardShortcutsModal />
+            <PushPrompt />
           </FeatureFlagProvider>
         </AuthProvider>
       </GoogleReCaptchaProvider>

@@ -26,3 +26,11 @@ exports.createOtpLimiter = (redis) =>
     duration: 300,
     blockDuration: 900,
   });
+
+exports.createContactLimiter = (redis) =>
+  createLimiter(redis, {
+    keyPrefix: "contact_limit",
+    points: 3,         // 3 submissions
+    duration: 3600,    // per hour
+    blockDuration: 7200,
+  });

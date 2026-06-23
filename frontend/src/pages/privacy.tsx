@@ -1,4 +1,5 @@
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Box, Chip, Container, Divider, Stack, Typography,
 } from "@mui/material";
@@ -12,6 +13,7 @@ export default function PrivacyPage() {
       title="Privacy Policy"
       description="MiloBolo Privacy Policy — how we collect, use, and protect your data on our free anonymous random chat platform."
     >
+      <SeoHead title="Privacy Policy" description="MiloBolo Privacy Policy — how we collect, use, and protect your data on our free anonymous random chat platform." path="/privacy" />
       <Container maxWidth="md" sx={{ py: { xs: 5, md: 8 } }}>
         <Stack direction="row" spacing={1.5} alignItems="center" mb={1}>
           <LockIcon color="success" sx={{ fontSize: 32 }} />

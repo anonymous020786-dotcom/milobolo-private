@@ -1,5 +1,6 @@
 import { useState } from "react";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Alert, Box, Button, Card, CardContent, Chip, CircularProgress,
   Container, Grid, Snackbar, Stack, TextField, Typography, useTheme,
@@ -169,6 +170,7 @@ export default function ContactPage() {
       title="Contact Us"
       description="Get in touch with the MiloBolo team — email, WhatsApp support, and a contact form for any questions or feedback."
     >
+      <SeoHead title="Contact Us" description="Get in touch with the MiloBolo team — email, WhatsApp support, and a contact form for any questions or feedback." path="/contact" />
       {/* Hero */}
       <Box
         sx={{

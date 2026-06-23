@@ -1,4 +1,5 @@
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Box, Card, CardContent, Chip, Container, Divider, Grid,
   Stack, Typography, useTheme,
@@ -54,6 +55,11 @@ export default function AboutPage() {
   const theme = useTheme();
   return (
     <Layout title="About MiloBolo" description="Learn about MiloBolo — the free, anonymous, encrypted random chat platform connecting people worldwide.">
+      <SeoHead
+        title="About"
+        description="Learn about MiloBolo — the free, anonymous, encrypted random chat platform connecting people worldwide."
+        path="/about"
+      />
       {/* Hero */}
       <Box
         sx={{

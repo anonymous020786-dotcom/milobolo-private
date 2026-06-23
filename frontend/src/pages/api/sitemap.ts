@@ -16,6 +16,7 @@ const STATIC_PAGES = [
   { url: "/topics", priority: "0.8", changefreq: "monthly" },
   { url: "/friends", priority: "0.5", changefreq: "weekly" },
   { url: "/status", priority: "0.4", changefreq: "hourly" },
+  { url: "/leaderboard", priority: "0.6", changefreq: "daily" },
 ];
 
 export default function sitemap(_req: NextApiRequest, res: NextApiResponse) {

@@ -1,11 +1,13 @@
 import { useRouter } from "next/router";
 import { Box, Container, Typography, Button, Stack } from "@mui/material";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 
 export default function NotFound() {
   const router = useRouter();
   return (
     <Layout title="404 — Page Not Found">
+      <SeoHead title="404 — Page Not Found" description="This page doesn't exist on MiloBolo." path="/404" noIndex />
       <Box sx={{ minHeight: "80vh", display: "flex", alignItems: "center" }}>
         <Container maxWidth="sm" sx={{ textAlign: "center" }}>
           <Typography variant="h1" fontWeight={900} sx={{

@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import Layout from "@/components/Layout";
+import SeoHead from "@/components/SeoHead";
 import {
   Avatar, Box, Button, Card, CardContent, Chip, CircularProgress,
   Container, Divider, IconButton, Stack, Tab, Tabs, Tooltip,
@@ -85,6 +86,7 @@ export default function FriendsPage() {
 
   return (
     <Layout title="Friends & Connections">
+      <SeoHead title="Friends & Connections" description="Manage your MiloBolo friends and incoming connection requests." path="/friends" noIndex />
       <Container maxWidth="md" sx={{ py: 5 }}>
         <Stack direction="row" alignItems="center" spacing={1.5} mb={4}>
           <PeopleIcon sx={{ fontSize: 32, color: "primary.main" }} />
