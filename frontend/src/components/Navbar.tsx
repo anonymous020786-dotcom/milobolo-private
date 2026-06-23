@@ -21,9 +21,9 @@ export default function Navbar() {
     { label: "Video Chat", href: "/chat?mode=video" },
     { label: "Text Chat", href: "/chat?mode=text" },
     { label: "Spy Mode", href: "/spy" },
+    { label: "Friends", href: "/friends" },
     { label: "Blog", href: "/blog" },
     { label: "About", href: "/about" },
-    { label: "Contact", href: "/contact" },
   ];
 
   return (

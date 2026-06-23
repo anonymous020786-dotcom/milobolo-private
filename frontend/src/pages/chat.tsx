@@ -626,8 +626,23 @@ export default function Chat() {
     }, 1500);
   };
 
+  // ── Flood protection (max 5 messages per 3 s) ────────────
+  const msgTimestamps = useRef<number[]>([]);
+  const FLOOD_WINDOW = 3000;
+  const FLOOD_LIMIT = 5;
+
   const sendMessage = useCallback(async () => {
     if (!text.trim() || !roomId) return;
+
+    // Client-side rate limit
+    const now = Date.now();
+    msgTimestamps.current = msgTimestamps.current.filter((t) => now - t < FLOOD_WINDOW);
+    if (msgTimestamps.current.length >= FLOOD_LIMIT) {
+      setSnack("You're sending messages too fast. Please slow down.");
+      return;
+    }
+    msgTimestamps.current.push(now);
+
     const plain = text.trim();
     setText("");
     setIsTyping(false);
@@ -1054,23 +1069,36 @@ export default function Chat() {
                 )}
 
                 {messages.map((m) => (
-                  <Box key={m.id} sx={{ mb: 0.25 }}>
+                  <Box key={m.id} sx={{ mb: 0.25, "&:hover .msg-actions": { opacity: 1 } }}>
                     {m.from === "system" ? (
                       <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13, userSelect: "text" }}>
                         {m.text}
                       </Typography>
                     ) : (
-                      <Box sx={{ display: "flex", gap: 0.75, userSelect: "text" }}>
+                      <Box sx={{ display: "flex", gap: 0.75, userSelect: "text", alignItems: "flex-start" }}>
                         <Typography component="span" sx={{
                           fontWeight: 700, flexShrink: 0, fontSize: "inherit",
                           color: m.from === "me" ? "#6C63FF" : "#FF6584",
                         }}>
                           {m.from === "me" ? "You" : strangerLabel}:
                         </Typography>
-                        <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: "inherit" }}>
+                        <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: "inherit", flex: 1 }}>
                           {m.text}
                           {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
                         </Typography>
+                        <Tooltip title="Translate message">
+                          <IconButton
+                            className="msg-actions"
+                            size="small"
+                            sx={{ opacity: 0, transition: "opacity 0.15s", flexShrink: 0, p: 0.2 }}
+                            onClick={() => window.open(
+                              `https://translate.google.com/?sl=auto&tl=en&text=${encodeURIComponent(m.text)}&op=translate`,
+                              "_blank", "noopener,noreferrer"
+                            )}
+                          >
+                            <Typography sx={{ fontSize: 11 }}>🌐</Typography>
+                          </IconButton>
+                        </Tooltip>
                       </Box>
                     )}
                   </Box>

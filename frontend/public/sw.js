@@ -1,5 +1,5 @@
-const CACHE = "milobolo-v2";
-const PRECACHE = ["/", "/manifest.webmanifest", "/icons/icon-192.png"];
+const CACHE = "milobolo-v3";
+const PRECACHE = ["/", "/offline.html", "/manifest.webmanifest", "/icons/icon-192.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -52,7 +52,7 @@ self.addEventListener("fetch", (e) => {
         if (res.ok) caches.open(CACHE).then((c) => c.put(e.request, res.clone()));
         return res;
       })
-      .catch(() => caches.match(e.request).then((cached) => cached || new Response("Offline", { status: 503 })))
+      .catch(() => caches.match(e.request).then((cached) => cached || caches.match("/offline.html") || new Response("Offline", { status: 503 })))
   );
 });
 

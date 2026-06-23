@@ -39,6 +39,7 @@ const FOOTER_LINKS = [
       { label: "Sign In", href: "/auth/login" },
       { label: "Register", href: "/auth/register" },
       { label: "Profile", href: "/profile" },
+      { label: "Friends", href: "/friends" },
       { label: "Chat History", href: "/history" },
     ],
   },

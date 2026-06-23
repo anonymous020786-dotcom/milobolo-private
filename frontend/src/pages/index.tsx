@@ -127,9 +127,37 @@ export default function Home() {
           }}>
             MiloBolo
           </Typography>
-          <Typography variant="h5" color="text.secondary" fontWeight={400} sx={{ mb: 4 }}>
+          <Typography variant="h5" color="text.secondary" fontWeight={400} sx={{ mb: 3 }}>
             Talk to strangers!
           </Typography>
+
+          {/* Mood selector */}
+          <Stack direction="row" spacing={1} justifyContent="center" mb={2} flexWrap="wrap" gap={1}>
+            {[
+              { emoji: "😊", label: "Just Chat" },
+              { emoji: "🎓", label: "Learn" },
+              { emoji: "🌍", label: "Travel" },
+              { emoji: "🎮", label: "Gaming" },
+              { emoji: "💬", label: "Language" },
+            ].map(({ emoji, label }) => (
+              <Chip
+                key={label}
+                label={`${emoji} ${label}`}
+                size="small"
+                onClick={() => {
+                  if (!interests.includes(label)) setInterests((prev) => [...prev.slice(-4), label]);
+                }}
+                sx={{
+                  cursor: "pointer",
+                  bgcolor: interests.includes(label) ? "rgba(108,99,255,0.25)" : "rgba(255,255,255,0.06)",
+                  border: "1px solid",
+                  borderColor: interests.includes(label) ? "primary.main" : "rgba(255,255,255,0.1)",
+                  color: interests.includes(label) ? "primary.main" : "text.secondary",
+                  "&:hover": { bgcolor: "rgba(108,99,255,0.15)" },
+                }}
+              />
+            ))}
+          </Stack>
 
           {/* Interest input */}
           {isEnabled("interest_matching") && (
