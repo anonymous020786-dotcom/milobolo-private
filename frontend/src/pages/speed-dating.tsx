@@ -210,8 +210,8 @@ export default function SpeedDating() {
         description="Try MiloBolo Speed Dating: timed 3–10 minute video sessions with random strangers. Like or pass — find out when it's mutual."
         path="/speed-dating"
       />
-      <AgeGate>
-        <Layout title="Speed Dating">
+      <AgeGate />
+      <Layout title="Speed Dating">
           <Container maxWidth="lg" sx={{ py: { xs: 3, md: 5 } }}>
 
             {/* Header */}
@@ -464,8 +464,7 @@ export default function SpeedDating() {
 
           <Snackbar open={!!snack} autoHideDuration={4000} onClose={() => setSnack("")}
             message={snack} anchorOrigin={{ vertical: "bottom", horizontal: "center" }} />
-        </Layout>
-      </AgeGate>
+      </Layout>
     </>
   );
 }

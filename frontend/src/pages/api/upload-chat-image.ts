@@ -17,7 +17,7 @@ async function isNsfw(buffer: Buffer): Promise<boolean> {
     const res = await fetch(`${signalingUrl}/api/check-nsfw`, {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
-      body: buffer,
+      body: buffer as unknown as BodyInit,
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) return false;
