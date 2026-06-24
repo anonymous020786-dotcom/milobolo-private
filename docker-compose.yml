@@ -36,6 +36,11 @@ services:
       - "3000"
     environment:
       - NODE_ENV=production
+      # Internal Docker network URL — used by server-side API routes (NSFW check, etc.)
+      # Never exposed to the browser (no NEXT_PUBLIC_ prefix)
+      - SIGNALING_INTERNAL_URL=http://signaling:4000
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
     networks:
       - milobolo
 

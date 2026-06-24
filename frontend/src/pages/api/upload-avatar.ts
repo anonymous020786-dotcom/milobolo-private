@@ -34,6 +34,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       .webp({ quality: 85 })
       .toBuffer();
 
+    // NSFW gate on avatars too
+    const signalingUrl = process.env.SIGNALING_INTERNAL_URL || "http://signaling:4000";
+    try {
+      const nsfwRes = await fetch(`${signalingUrl}/api/check-nsfw`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: buffer,
+        signal: AbortSignal.timeout(8000),
+      });
+      if (nsfwRes.ok) {
+        const { nsfw } = await nsfwRes.json() as { nsfw?: boolean };
+        if (nsfw) return res.status(422).json({ error: "Avatar rejected: explicit content detected." });
+      }
+    } catch { /* fail open */ }
+
     const url = await uploadAvatar(userId, buffer, "image/webp");
     res.json({ url });
   } catch (e: any) {

@@ -12,11 +12,48 @@ const fetch = require("node-fetch");
 const mailer = require("./lib/mailer");
 const rateLimiter = require("./lib/rateLimiter");
 const BadWordsFilter = require("bad-words");
+const tf = require("@tensorflow/tfjs");
+const nsfwjs = require("nsfwjs");
+const Jimp = require("jimp");
 
 const profanityFilter = new BadWordsFilter();
-// Warn at startup if NSFW image API keys are missing
-if (!process.env.SIGHTENGINE_USER || !process.env.SIGHTENGINE_SECRET) {
-  console.warn("[moderation] SIGHTENGINE_USER/SECRET not set — image NSFW check disabled");
+
+// ── nsfwjs model (loaded once at startup) ───────────────────
+let nsfwModel = null;
+(async () => {
+  try {
+    // Use the mobilenet_v2 quantised model — fast, ~5 MB
+    nsfwModel = await nsfwjs.load("https://nsfwjs.com/quant_nsfw_mobilenet/", { size: 224 });
+    console.log("[nsfwjs] model loaded");
+  } catch (e) {
+    console.warn("[nsfwjs] model failed to load — image NSFW check disabled:", e.message);
+  }
+})();
+
+async function classifyBuffer(buffer) {
+  if (!nsfwModel) return false;
+  try {
+    const image = await Jimp.read(buffer);
+    image.resize(224, 224);
+    const { data, width, height } = image.bitmap;
+    // Jimp bitmap is RGBA; build an RGB tensor
+    const pixels = new Int32Array(width * height * 3);
+    for (let i = 0, j = 0; i < data.length; i += 4, j += 3) {
+      pixels[j] = data[i];
+      pixels[j + 1] = data[i + 1];
+      pixels[j + 2] = data[i + 2];
+    }
+    const tensor = tf.tensor3d(pixels, [height, width, 3], "int32");
+    const predictions = await nsfwModel.classify(tensor);
+    tensor.dispose();
+
+    const get = (cls) => predictions.find((p) => p.className === cls)?.probability ?? 0;
+    // Flag if Porn > 60% or Hentai > 70%
+    return get("Porn") > 0.6 || get("Hentai") > 0.7;
+  } catch (e) {
+    console.warn("[nsfwjs] classify error:", e.message);
+    return false; // fail open — don't block on decode errors
+  }
 }
 
 const app = express();
@@ -210,6 +247,27 @@ app.post("/api/contact", async (req, res, next) => {
 });
 
 app.get("/health", (_, res) => res.json({ status: "ok", timestamp: Date.now() }));
+
+// ── NSFW image check ─────────────────────────────────────────
+// Called by the Next.js upload-chat-image API before storing to R2.
+// Accepts raw image bytes as application/octet-stream (max 6 MB).
+app.post("/api/check-nsfw",
+  express.raw({ type: "application/octet-stream", limit: "6mb" }),
+  async (req, res) => {
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: "No image data" });
+    }
+    // Accept calls from the frontend container (no Origin header on server-to-server)
+    // or from allowed browser origins during local dev
+    const origin = req.headers.origin || "";
+    const allowed = process.env.SITE_URL || "https://chat.videodownloaders.cloud";
+    if (origin && !origin.startsWith(allowed) && !origin.startsWith("http://localhost")) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+    const flagged = await classifyBuffer(req.body);
+    res.json({ nsfw: flagged });
+  }
+);
 
 // ─── Socket.io rate limiters ────────────────────────────────
 const socketLimiter = new RateLimiterRedis({
