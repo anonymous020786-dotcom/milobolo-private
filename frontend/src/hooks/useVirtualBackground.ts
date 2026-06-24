@@ -17,7 +17,7 @@ async function loadSegmenter(): Promise<unknown> {
     if (existing) {
       // Script already loading — wait for it
       existing.addEventListener("load", () => {
-        SelfieSegmentation = (window as Record<string, unknown>)["SelfieSegmentation"];
+        SelfieSegmentation = (window as unknown as Record<string, unknown>)["SelfieSegmentation"];
         resolve(SelfieSegmentation);
       });
       return;
@@ -28,7 +28,7 @@ async function loadSegmenter(): Promise<unknown> {
     script.src = "https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/selfie_segmentation.js";
     script.crossOrigin = "anonymous";
     script.onload = () => {
-      SelfieSegmentation = (window as Record<string, unknown>)["SelfieSegmentation"];
+      SelfieSegmentation = (window as unknown as Record<string, unknown>)["SelfieSegmentation"];
       resolve(SelfieSegmentation);
     };
     script.onerror = reject;
