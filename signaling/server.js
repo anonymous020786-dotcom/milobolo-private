@@ -22,14 +22,9 @@ const profanityFilter = new BadWordsFilter();
 let nsfwModel = null;
 (async () => {
   try {
-    // Load from local path baked into Docker image at build time (no CDN at runtime)
-    const modelPath = process.env.NSFW_MODEL_PATH || "/app/nsfw_model/model.json";
-    const fs = require("fs");
-    const modelUrl = fs.existsSync(modelPath)
-      ? `file://${modelPath}`
-      : "https://nsfwjs.com/quant_nsfw_mobilenet/"; // dev fallback
-    nsfwModel = await nsfwjs.load(modelUrl, { size: 224 });
-    console.log("[nsfwjs] model loaded from", modelUrl);
+    // nsfwjs v4: models are bundled in the npm package — no external URL needed
+    nsfwModel = await nsfwjs.load("MobileNetV2");
+    console.log("[nsfwjs] MobileNetV2 model loaded from bundled npm package");
   } catch (e) {
     console.warn("[nsfwjs] model failed to load — image NSFW check disabled:", e.message);
   }
