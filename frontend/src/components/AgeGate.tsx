@@ -11,11 +11,11 @@ export default function AgeGate() {
   const [checked, setChecked] = useState(false);
 
   useEffect(() => {
-    if (!localStorage.getItem("age_confirmed")) setOpen(true);
+    if (!sessionStorage.getItem("age_confirmed")) setOpen(true);
   }, []);
 
   const handleConfirm = () => {
-    localStorage.setItem("age_confirmed", "1");
+    sessionStorage.setItem("age_confirmed", "1");
     setOpen(false);
   };
 

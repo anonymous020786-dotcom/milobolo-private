@@ -11,6 +11,7 @@ import {
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import VideoCallIcon from "@mui/icons-material/VideoCall";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import MicIcon from "@mui/icons-material/Mic";
 import VisibilityOutlinedIcon from "@mui/icons-material/VisibilityOutlined";
 import TuneIcon from "@mui/icons-material/Tune";
 import OnlineCounter from "@/components/OnlineCounter";
@@ -108,6 +109,7 @@ export default function Home() {
     const lStr = language ? `&lang=${language}` : "";
     const gStr = gender !== "any" ? `&gender=${gender}` : "";
     if (m === "video") router.push(`/camera-test?mode=video${iStr}${lStr}${gStr}`);
+    else if (m === "voice") router.push(`/chat?mode=voice${iStr}${lStr}${gStr}`);
     else router.push(`/chat?mode=${m}${iStr}${lStr}${gStr}`);
   };
 
@@ -156,6 +158,7 @@ export default function Home() {
           <Stack direction="row" spacing={2}>
             {[
               { label: "Video", href: "/camera-test?mode=video" },
+              { label: "Voice", href: "/chat?mode=voice" },
               { label: "Text", href: "/chat?mode=text" },
               { label: "Spy Mode", href: "/spy" },
             ].map((l) => (
@@ -284,6 +287,18 @@ export default function Home() {
                 Video
               </Button>
             )}
+            <Button
+              fullWidth variant="outlined" size="large"
+              startIcon={<MicIcon />}
+              onClick={() => start("voice")}
+              sx={{
+                py: 1.6, fontSize: 16, fontWeight: 700, borderRadius: 2,
+                borderColor: "rgba(255,101,132,0.5)",
+                color: "#FF6584",
+                "&:hover": { borderColor: "#FF6584", bgcolor: "rgba(255,101,132,0.07)" },
+              }}>
+              Voice
+            </Button>
             {isEnabled("text_chat") && (
               <Button
                 fullWidth variant="outlined" size="large"
@@ -399,7 +414,7 @@ export default function Home() {
             <Typography variant="h6" fontWeight={700} textAlign="center" mb={4}>MiloBolo by the numbers</Typography>
             <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr 1fr", md: "repeat(4, 1fr)" }, gap: 2 }}>
               <StatCard value={190} suffix="+" label="Countries connected" color="#6C63FF" />
-              <StatCard value={3} suffix="" label="Chat modes" color="#FF6584" />
+              <StatCard value={4} suffix="" label="Chat modes" color="#FF6584" />
               <StatCard value={70} suffix="+" label="Themes & a11y features" color="#22c55e" />
               <StatCard value={100} suffix="%" label="Free forever" color="#f59e0b" />
             </Box>

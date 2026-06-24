@@ -137,10 +137,14 @@ export default function Chat() {
   const [showMobileChat, setShowMobileChat] = useState(false); // mobile: show text panel
   const [imgUploading, setImgUploading] = useState(false);
   const [peerGender, setPeerGender] = useState<string | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [confirmAction, setConfirmAction] = useState<"next" | "stop" | null>(null);
 
   // ── refs ─────────────────────────────────────────────────
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const reconnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startSearchRef = useRef<(() => void) | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -358,21 +362,39 @@ export default function Chat() {
       }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") {
-        setSnack("Connection poor — trying ICE restart…");
+      const cs = pc.connectionState;
+      if (cs === "connected") {
+        setIsReconnecting(false);
+        if (reconnTimerRef.current) { clearTimeout(reconnTimerRef.current); reconnTimerRef.current = null; }
+      }
+      if (cs === "disconnected" || cs === "failed") {
+        setIsReconnecting(true);
         pc.restartIce();
+        if (reconnTimerRef.current) clearTimeout(reconnTimerRef.current);
+        reconnTimerRef.current = setTimeout(() => {
+          if (pcRef.current?.connectionState !== "connected") {
+            setIsReconnecting(false);
+            setSnack("Connection lost. Finding new match…");
+            cleanup();
+            setState("idle");
+            setMessages([]);
+            socketRef.current?.emit("cancel_search");
+            socketRef.current?.emit("next");
+            setTimeout(() => startSearchRef.current?.(), 300);
+          }
+        }, 12000);
       }
     };
 
     if (isInitiator) {
-      pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: mode === "video" || voiceActive })
+      pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: mode === "video" })
         .then((o) => pc.setLocalDescription(o))
         .then(() => {
           socketRef.current?.emit("signal", { to: peerIdRef.current, signal: { type: "offer", sdp: pc.localDescription } });
         });
     }
     return pc;
-  }, [mode, voiceActive]);
+  }, [mode, voiceActive, cleanup]);
 
   const startE2E = useCallback(async () => {
     if (!isEnabled("e2e_encryption")) return;
@@ -466,7 +488,7 @@ export default function Chat() {
         : `You're now chatting with a random stranger${pc ? ` from ${pc.flag} ${pc.countryName}` : ""}. Say hi!`;
       setMessages([{ id: "sys-0", from: "system", text: sysText, ts: Date.now(), encrypted: false }]);
 
-      if (mode === "video") createPeerConnection(isInitiator);
+      if (mode === "video" || mode === "voice") createPeerConnection(isInitiator);
       await startE2E();
     });
 
@@ -560,7 +582,7 @@ export default function Chat() {
   }, [fpId, mode]);
 
   const startSearch = useCallback(async () => {
-    if (mode === "video") {
+    if (mode === "video" || mode === "voice") {
       const stream = await getLocalStream();
       if (!stream) return;
     }
@@ -583,7 +605,10 @@ export default function Chat() {
     });
   }, [mode, user, interests, isEnabled, getLocalStream]);
 
-  const handleNext = useCallback(async () => {
+  // Keep ref in sync so ICE reconnect timer can call startSearch without stale closure
+  useEffect(() => { startSearchRef.current = startSearch; }, [startSearch]);
+
+  const execNext = useCallback(async () => {
     if (nextCooldown) return;
     setNextCooldown(true);
     setTimeout(() => setNextCooldown(false), 2000);
@@ -595,7 +620,7 @@ export default function Chat() {
     setTimeout(() => startSearch(), 300);
   }, [nextCooldown, cleanup, startSearch, saveHistory]);
 
-  const handleStop = useCallback(async () => {
+  const execStop = useCallback(async () => {
     await saveHistory(roomIdRef.current, msgCountRef.current, matchedInterestRef.current);
     cleanup();
     setState("idle");
@@ -603,6 +628,16 @@ export default function Chat() {
     socketRef.current?.emit("cancel_search");
     socketRef.current?.emit("next");
   }, [cleanup, saveHistory]);
+
+  const handleNext = useCallback(async () => {
+    if (state === "connected") { setConfirmAction("next"); return; }
+    await execNext();
+  }, [state, execNext]);
+
+  const handleStop = useCallback(async () => {
+    if (state === "connected") { setConfirmAction("stop"); return; }
+    await execStop();
+  }, [state, execStop]);
 
   // Keyboard shortcuts — after handleStop/handleNext
   useEffect(() => {
@@ -800,7 +835,7 @@ export default function Chat() {
   // ─── Render ────────────────────────────────────────────────
   return (
     <>
-      <Head><title>MiloBolo — {mode === "video" ? "Video" : "Text"} Chat</title></Head>
+      <Head><title>MiloBolo — {mode === "video" ? "Video" : mode === "voice" ? "Voice" : "Text"} Chat</title></Head>
       <AgeGate />
 
       <Box sx={{
@@ -833,6 +868,7 @@ export default function Chat() {
           {/* Mode tabs */}
           {[
             { label: "Video", val: "video", path: "/camera-test?mode=video" },
+            { label: "Voice", val: "voice", path: "/chat?mode=voice" },
             { label: "Text", val: "text", path: "/chat?mode=text" },
             { label: "Spy", val: "spy", path: "/spy" },
           ].map((tab) => (
@@ -889,7 +925,7 @@ export default function Chat() {
         <Box sx={{
           flex: 1, overflow: "hidden",
           display: "flex",
-          flexDirection: mode === "video"
+          flexDirection: (mode === "video" || mode === "voice")
             ? (isMobile ? "column" : "row")
             : "row",
         }}>
@@ -944,8 +980,21 @@ export default function Chat() {
                   </IconButton>
                 </Box>
 
+                {/* Reconnecting banner */}
+                {isReconnecting && (
+                  <Box sx={{
+                    position: "absolute", top: 0, left: 0, right: 0, zIndex: 10,
+                    bgcolor: "rgba(255,152,0,0.15)", backdropFilter: "blur(4px)",
+                    borderBottom: "1px solid rgba(255,152,0,0.3)",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 1, py: 0.75,
+                  }}>
+                    <CircularProgress size={14} color="warning" />
+                    <Typography fontSize={13} color="warning.main">Reconnecting… please wait</Typography>
+                  </Box>
+                )}
+
                 {/* Overlay: waiting / ended */}
-                {!isConnected && (
+                {!isConnected && !isReconnecting && (
                   <Box sx={{
                     position: "absolute", inset: 0, display: "flex", flexDirection: "column",
                     alignItems: "center", justifyContent: "center", bgcolor: "rgba(5,5,8,0.92)",
@@ -956,6 +1005,11 @@ export default function Chat() {
                         <Typography color="text.secondary" fontSize={14}>
                           Looking for someone{interests.length ? ` into ${interests[0]}` : ""}…
                         </Typography>
+                        <Button variant="outlined" color="error" size="small"
+                          onClick={execStop}
+                          sx={{ mt: 2, borderRadius: 2, fontSize: 12 }}>
+                          Stop Searching
+                        </Button>
                       </>
                     ) : state === "ended" ? (
                       <Box textAlign="center" px={2}>
@@ -1047,8 +1101,76 @@ export default function Chat() {
             </Box>
           )}
 
+          {/* ── VOICE MODE AUDIO PANEL ── */}
+          {mode === "voice" && (!isMobile || !showMobileChat) && (
+            <Box sx={{
+              flexShrink: 0, width: { xs: "100%", md: 260 },
+              height: isMobile ? 200 : "100%",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              borderRight: { md: "1px solid rgba(255,255,255,0.07)" },
+              borderBottom: { xs: "1px solid rgba(255,255,255,0.07)", md: "none" },
+              bgcolor: "rgba(0,0,0,0.25)", gap: 2, py: 4, px: 2,
+            }}>
+              <Box sx={{ position: "relative", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {isConnected && (
+                  <>
+                    <Box sx={{
+                      position: "absolute", width: 110, height: 110, borderRadius: "50%",
+                      border: "2px solid rgba(108,99,255,0.35)",
+                      animation: "vPulse 2s ease-in-out infinite",
+                      "@keyframes vPulse": { "0%,100%": { transform: "scale(1)", opacity: 0.6 }, "50%": { transform: "scale(1.08)", opacity: 0.25 } },
+                    }} />
+                    <Box sx={{
+                      position: "absolute", width: 130, height: 130, borderRadius: "50%",
+                      border: "2px solid rgba(108,99,255,0.18)",
+                      animation: "vPulse 2s 0.6s ease-in-out infinite",
+                    }} />
+                  </>
+                )}
+                <Box sx={{
+                  width: 80, height: 80, borderRadius: "50%",
+                  bgcolor: isConnected ? "rgba(108,99,255,0.25)" : isWaiting ? "rgba(108,99,255,0.1)" : "rgba(255,255,255,0.04)",
+                  border: `2px solid ${isConnected ? "rgba(108,99,255,0.6)" : "rgba(255,255,255,0.1)"}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  transition: "all 0.4s",
+                }}>
+                  <MicIcon sx={{ fontSize: 36, color: isConnected ? "primary.main" : "text.disabled" }} />
+                </Box>
+              </Box>
+              <Typography fontWeight={600} fontSize={15} color={isConnected ? "text.primary" : "text.secondary"}>
+                {isWaiting ? "Finding someone…" : isConnected ? strangerLabel : state === "ended" ? "Call ended" : "Voice Chat"}
+              </Typography>
+              {isConnected && (
+                <Typography variant="caption" color="text.disabled">{fmtDuration(chatDuration)}</Typography>
+              )}
+              {isWaiting && (
+                <>
+                  <CircularProgress size={18} color="primary" sx={{ mt: 0.5 }} />
+                  <Button variant="outlined" color="error" size="small" onClick={execStop}
+                    sx={{ mt: 1, borderRadius: 2, fontSize: 12 }}>
+                    Cancel
+                  </Button>
+                </>
+              )}
+              <Stack direction="row" spacing={1} mt={1}>
+                <Tooltip title={micOn ? "Mute" : "Unmute"}>
+                  <IconButton onClick={toggleMic} size="small" color={micOn ? "inherit" : "error"}
+                    sx={{ bgcolor: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)", "&:hover": { bgcolor: "rgba(255,255,255,0.1)" } }}>
+                    <MicIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                {isMobile && isConnected && (
+                  <Button size="small" variant="outlined" onClick={() => setShowMobileChat(true)}
+                    sx={{ borderRadius: 1.5, fontSize: 11, py: 0.3 }}>
+                    Chat
+                  </Button>
+                )}
+              </Stack>
+            </Box>
+          )}
+
           {/* ── CHAT PANEL ── */}
-          {(!isMobile || mode === "text" || showMobileChat) && (
+          {(!isMobile || mode === "text" || mode === "voice" || showMobileChat) && (
             <Box sx={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
 
               {/* Stop / New bar */}
@@ -1374,6 +1496,35 @@ export default function Chat() {
         <DialogActions sx={{ px: 3, pb: 2.5 }}>
           <Button onClick={() => { setReportDialog(false); setReportDetails(""); }}>Cancel</Button>
           <Button onClick={submitReport} color="error" variant="contained" sx={{ borderRadius: 2 }}>Submit Report</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Disconnect confirmation dialog */}
+      <Dialog open={!!confirmAction} onClose={() => setConfirmAction(null)} maxWidth="xs" fullWidth
+        PaperProps={{ sx: { bgcolor: "background.paper", borderRadius: 3 } }}>
+        <DialogTitle sx={{ pb: 1, fontSize: 17, fontWeight: 700 }}>
+          {confirmAction === "next" ? "Skip to next stranger?" : "End this conversation?"}
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            {confirmAction === "next"
+              ? "This will disconnect your current chat and find a new match."
+              : "This will end the chat and return you to the home screen."}
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5, gap: 1 }}>
+          <Button onClick={() => setConfirmAction(null)} sx={{ borderRadius: 2 }}>Stay</Button>
+          <Button
+            variant="contained" color={confirmAction === "next" ? "primary" : "error"}
+            sx={{ borderRadius: 2 }}
+            onClick={async () => {
+              const action = confirmAction;
+              setConfirmAction(null);
+              if (action === "next") await execNext();
+              else await execStop();
+            }}>
+            {confirmAction === "next" ? "Next" : "Stop"}
+          </Button>
         </DialogActions>
       </Dialog>
 
