@@ -655,10 +655,10 @@ export default function Chat() {
     }
   }, [voiceActive, createPeerConnection]);
 
-  const toggleBackground = (newMode: BgMode) => {
+  const toggleBackground = async (newMode: BgMode) => {
     setBgMode(newMode);
     setShowBgMenu(false);
-    const newStream = activateBg(newMode, localStreamRef.current);
+    const newStream = await activateBg(newMode, localStreamRef.current);
     if (newStream && pcRef.current && newMode !== "none") {
       const videoTrack = newStream.getVideoTracks()[0];
       const sender = pcRef.current.getSenders().find((s) => s.track?.kind === "video");

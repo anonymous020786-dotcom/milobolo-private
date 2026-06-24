@@ -3,6 +3,7 @@ import {
   Box, Button, Dialog, DialogContent, MobileStepper,
   Stack, Typography, useTheme,
 } from "@mui/material";
+import { supabase } from "@/lib/supabase";
 import KeyboardArrowLeftIcon from "@mui/icons-material/KeyboardArrowLeft";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import VideocamIcon from "@mui/icons-material/Videocam";
@@ -59,15 +60,37 @@ export default function WelcomeModal() {
   const [step, setStep] = useState(0);
 
   useEffect(() => {
-    if (!localStorage.getItem(STORAGE_KEY)) {
+    // Check localStorage first (fast); also check profile for cross-device sync
+    if (localStorage.getItem(STORAGE_KEY)) return;
+
+    const checkAndShow = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data } = await supabase
+          .from("profiles").select("welcome_seen").eq("id", user.id).single();
+        if (data?.welcome_seen) {
+          localStorage.setItem(STORAGE_KEY, "1");
+          return;
+        }
+      }
       const t = setTimeout(() => setOpen(true), 600);
-      return () => clearTimeout(t);
-    }
+      return t;
+    };
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    checkAndShow().then((t) => { if (t) timer = t; });
+    return () => { if (timer) clearTimeout(timer); };
   }, []);
 
-  const close = () => {
+  const close = async () => {
     localStorage.setItem(STORAGE_KEY, "1");
     setOpen(false);
+    // Persist to profile so other devices skip the modal too
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      supabase.from("profiles").update({ welcome_seen: true } as Record<string, unknown>)
+        .eq("id", user.id).then(() => {});
+    }
   };
 
   const current = STEPS[step];

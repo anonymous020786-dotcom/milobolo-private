@@ -31,7 +31,9 @@ export default function LeaderboardPage() {
       .from("profiles")
       .select("id, display_name, avatar_url, total_chats, created_at")
       .gt("total_chats", 0)
+      .eq("is_banned", false)
       .order("total_chats", { ascending: false })
+      .order("created_at", { ascending: true }) // tie-break: earlier account wins
       .limit(50)
       .then(({ data }) => {
         if (data) setLeaders(data as LeaderEntry[]);

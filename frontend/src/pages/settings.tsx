@@ -98,9 +98,21 @@ export default function SettingsPage() {
   const [pushPermission, setPushPermission] = useState<NotificationPermission>("default");
 
   useEffect(() => {
+    // Load from localStorage immediately, then hydrate from server (cross-device sync)
     setSettings(load());
     if (typeof Notification !== "undefined") setPushPermission(Notification.permission);
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    fetch("/api/settings").then((r) => r.json()).then(({ settings: remote }) => {
+      if (remote && typeof remote === "object") {
+        const merged = { ...DEFAULTS, ...remote };
+        setSettings(merged);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+      }
+    }).catch(() => {});
+  }, [user]);
 
   useEffect(() => {
     if (!authLoading && !user) router.push("/auth/login?next=/settings");
@@ -113,12 +125,13 @@ export default function SettingsPage() {
   const handleSave = async () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
 
-    // Persist save-history preference to Supabase profile too
     if (user) {
-      await supabase.from("profiles")
-        .update({ allow_friend_requests: settings.allowFriendRequests })
-        .eq("id", user.id)
-        .catch(() => {});
+      // Persist all settings to Supabase for cross-device sync
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings }),
+      }).catch(() => {});
     }
 
     setSaved(true);
@@ -131,6 +144,21 @@ export default function SettingsPage() {
     setPushPermission(result);
     if (result === "granted") {
       set("pushEnabled", true);
+      // Register service worker push subscription if supported
+      if ("serviceWorker" in navigator && "PushManager" in window) {
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          const existing = await reg.pushManager.getSubscription();
+          if (!existing) {
+            await reg.pushManager.subscribe({
+              userVisibleOnly: true,
+              applicationServerKey: process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY,
+            });
+          }
+        } catch {
+          // VAPID key not configured or subscription failed — permission still granted
+        }
+      }
       new Notification("MiloBolo", { body: "Push notifications enabled!", icon: "/icons/icon-192.png" });
     }
   };

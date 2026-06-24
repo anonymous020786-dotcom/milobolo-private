@@ -85,7 +85,7 @@ export default function TopicsPage() {
 
   const startChat = (topic: Topic, mode: "video" | "text") => {
     const interests = encodeURIComponent(topic.label);
-    if (mode === "video") router.push(`/camera-test?mode=video&interests=${interests}`);
+    if (mode === "video") router.push(`/chat?mode=video&interests=${interests}`);
     else router.push(`/chat?mode=text&interests=${interests}`);
   };
 

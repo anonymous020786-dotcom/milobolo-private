@@ -84,6 +84,7 @@ export default function SpyPage() {
   const socketRef = useRef<Socket | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const roomIdRef = useRef("");
+  const waitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -96,6 +97,7 @@ export default function SpyPage() {
     socket.on("waiting", () => setSpyState("waiting"));
 
     socket.on("spy_match_found", ({ roomId: rid, question: q, role: r }) => {
+      if (waitTimerRef.current) { clearTimeout(waitTimerRef.current); waitTimerRef.current = null; }
       setRoomId(rid);
       roomIdRef.current = rid;
       setSpyRole(r);
@@ -140,17 +142,27 @@ export default function SpyPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const startWaitTimeout = () => {
+    if (waitTimerRef.current) clearTimeout(waitTimerRef.current);
+    waitTimerRef.current = setTimeout(() => {
+      setSpyState("idle");
+      setSnack("No match found. Please try again.");
+    }, 90_000); // 90s timeout
+  };
+
   const startAsSpy = () => {
     if (!question.trim()) return setSnack("Enter a question first.");
     setRole("spy");
     setSpyState("waiting");
     socketRef.current?.emit("find_spy_match", { role: "spy", question: question.trim() });
+    startWaitTimeout();
   };
 
   const startAsChatter = () => {
     setRole("chatter");
     setSpyState("waiting");
     socketRef.current?.emit("find_spy_match", { role: "chatter" });
+    startWaitTimeout();
   };
 
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

@@ -134,6 +134,8 @@ export default function StatusPage() {
   };
 
   const operationalCount = services.filter((s) => s.status === "operational").length;
+  const signalingOk = services.find((s) => s.name === "Signaling Server")?.status === "operational";
+  const supabaseOk = services.find((s) => s.name === "Authentication")?.status === "operational";
 
   return (
     <Layout title="System Status — MiloBolo">
@@ -218,19 +220,22 @@ export default function StatusPage() {
 
         {/* Uptime history (static display — placeholder) */}
         <Typography variant="overline" color="text.disabled" fontWeight={700} letterSpacing={1.5} display="block" mb={2}>
-          90-Day Uptime
+          Service Status (live checks)
         </Typography>
         {[
-          { name: "Video Chat", uptime: 99.7 },
-          { name: "Text Chat", uptime: 99.9 },
-          { name: "Signaling Server", uptime: 99.5 },
-          { name: "Authentication", uptime: 100 },
-        ].map(({ name, uptime }) => (
+          { name: "Video Chat", key: "signaling" },
+          { name: "Text Chat", key: "signaling" },
+          { name: "Signaling Server", key: "signaling" },
+          { name: "Authentication", key: "supabase" },
+        ].map(({ name, key }) => {
+          const alive = key === "signaling" ? signalingOk : supabaseOk;
+          const uptime = alive ? 100 : 0;
+          return (
           <Box key={name} mb={2}>
             <Stack direction="row" justifyContent="space-between" mb={0.75}>
               <Typography variant="body2">{name}</Typography>
-              <Typography variant="body2" fontWeight={700} color={uptime >= 99.9 ? "success.main" : uptime >= 99 ? "warning.main" : "error.main"}>
-                {uptime}%
+              <Typography variant="body2" fontWeight={700} color={alive ? "success.main" : "error.main"}>
+                {alive ? "Operational" : "Down"}
               </Typography>
             </Stack>
             <LinearProgress
@@ -240,13 +245,14 @@ export default function StatusPage() {
                 height: 6, borderRadius: 3,
                 bgcolor: "rgba(255,255,255,0.06)",
                 "& .MuiLinearProgress-bar": {
-                  bgcolor: uptime >= 99.9 ? "success.main" : uptime >= 99 ? "warning.main" : "error.main",
+                  bgcolor: alive ? "success.main" : "error.main",
                   borderRadius: 3,
                 },
               }}
             />
           </Box>
-        ))}
+          );
+        })}
 
         <Box sx={{ mt: 4, p: 2.5, bgcolor: "rgba(255,255,255,0.02)", borderRadius: 2, border: "1px solid rgba(255,255,255,0.06)" }}>
           <Typography variant="body2" color="text.secondary" lineHeight={1.8}>

@@ -9,6 +9,7 @@ import {
   Tooltip, Typography,
 } from "@mui/material";
 import PersonRemoveIcon from "@mui/icons-material/PersonRemove";
+import BlockIcon from "@mui/icons-material/Block";
 import CheckIcon from "@mui/icons-material/Check";
 import CloseIcon from "@mui/icons-material/Close";
 import PeopleIcon from "@mui/icons-material/People";
@@ -38,6 +39,7 @@ export default function FriendsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [removeTarget, setRemoveTarget] = useState<Connection | null>(null);
+  const [blockTarget, setBlockTarget] = useState<Connection | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) router.push("/auth/login?next=/friends");
@@ -99,6 +101,13 @@ export default function FriendsPage() {
     if (!removeTarget) return;
     await supabase.from("connections").delete().eq("id", removeTarget.id);
     setRemoveTarget(null);
+    loadConnections();
+  };
+
+  const confirmBlock = async () => {
+    if (!blockTarget) return;
+    await supabase.from("connections").update({ status: "blocked" }).eq("id", blockTarget.id);
+    setBlockTarget(null);
     loadConnections();
   };
 
@@ -198,6 +207,11 @@ export default function FriendsPage() {
                                 Connected {new Date(c.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
                               </Typography>
                             </Box>
+                            <Tooltip title="Block user">
+                              <IconButton size="small" color="warning" onClick={() => setBlockTarget(c)}>
+                                <BlockIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
                             <Tooltip title="Remove connection">
                               <IconButton size="small" color="error" onClick={() => setRemoveTarget(c)}>
                                 <PersonRemoveIcon fontSize="small" />
@@ -319,6 +333,23 @@ export default function FriendsPage() {
           <Button onClick={() => setRemoveTarget(null)}>Cancel</Button>
           <Button variant="contained" color="error" onClick={confirmRemove} sx={{ borderRadius: 2 }}>
             Remove
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Block confirmation dialog */}
+      <Dialog open={!!blockTarget} onClose={() => setBlockTarget(null)} maxWidth="xs" fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}>
+        <DialogTitle>Block user?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            Block <b>{blockTarget?.display_name}</b>? They will no longer be able to send you friend requests or be matched with you.
+          </Typography>
+        </DialogContent>
+        <DialogActions sx={{ px: 3, pb: 2.5 }}>
+          <Button onClick={() => setBlockTarget(null)}>Cancel</Button>
+          <Button variant="contained" color="warning" onClick={confirmBlock} sx={{ borderRadius: 2 }}>
+            Block
           </Button>
         </DialogActions>
       </Dialog>

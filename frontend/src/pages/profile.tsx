@@ -287,6 +287,7 @@ export default function Profile() {
   const [totpFactors, setTotpFactors] = useState<any[]>([]);
   const [totpSetupOpen, setTotpSetupOpen] = useState(false);
   const [totpUnenrolling, setTotpUnenrolling] = useState(false);
+  const [unenrollConfirm, setUnenrollConfirm] = useState<string | null>(null); // factorId to confirm
   const [sessionInfo, setSessionInfo] = useState<{ lastSignIn: string; provider: string } | null>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
@@ -360,12 +361,14 @@ export default function Profile() {
     const ok = await verifyOtp(user!.email!, deleteOtp, "delete");
     if (!ok) return;
     await supabase.from("profiles").delete().eq("id", user!.id);
-    await supabase.auth.admin?.deleteUser(user!.id);
+    // Delete auth user via server-side API (requires service key)
+    await fetch("/api/delete-account", { method: "POST" });
     await signOut();
     router.push("/");
   };
 
   const handleUnenrollTotp = async (factorId: string) => {
+    setUnenrollConfirm(null);
     setTotpUnenrolling(true);
     const { error } = await supabase.auth.mfa.unenroll({ factorId });
     if (error) showMsg("error", error.message);
@@ -557,7 +560,7 @@ export default function Profile() {
                               </Typography>
                             </Box>
                             <Button variant="outlined" color="error" size="small" sx={{ borderRadius: 1.5 }}
-                              disabled={totpUnenrolling} onClick={() => handleUnenrollTotp(f.id)}>
+                              disabled={totpUnenrolling} onClick={() => setUnenrollConfirm(f.id)}>
                               Remove
                             </Button>
                           </Stack>
@@ -637,9 +640,18 @@ export default function Profile() {
                     </Box>
                   </Stack>
                   <Divider sx={{ my: 2.5, opacity: 0.08 }} />
-                  <Button variant="outlined" color="error" size="small" onClick={signOut} sx={{ borderRadius: 1.5 }}>
-                    Sign out of this device
-                  </Button>
+                  <Stack direction="row" spacing={1} flexWrap="wrap">
+                    <Button variant="outlined" color="error" size="small" onClick={signOut} sx={{ borderRadius: 1.5 }}>
+                      Sign out of this device
+                    </Button>
+                    <Button variant="outlined" color="warning" size="small" sx={{ borderRadius: 1.5 }}
+                      onClick={async () => {
+                        await fetch("/api/sessions", { method: "DELETE" });
+                        showMsg("success", "Signed out of all other devices");
+                      }}>
+                      Sign out all other devices
+                    </Button>
+                  </Stack>
                 </CardContent>
               </Card>
             </Grid>
@@ -707,6 +719,22 @@ export default function Profile() {
             <Button color="error" variant="contained" onClick={handleDeleteAccount}
               disabled={deleteStep === 1 && deleteOtp.length < 6}>
               {deleteStep === 0 ? "Send OTP" : "Confirm Delete"}
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* 2FA unenroll confirmation */}
+        <Dialog open={!!unenrollConfirm} onClose={() => setUnenrollConfirm(null)} maxWidth="xs" fullWidth>
+          <DialogTitle>Remove Two-Factor Authentication?</DialogTitle>
+          <DialogContent>
+            <Typography variant="body2" color="text.secondary">
+              This will disable TOTP 2FA on your account. Anyone who gains access to your password will be able to sign in without a second factor.
+            </Typography>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setUnenrollConfirm(null)}>Cancel</Button>
+            <Button variant="contained" color="error" onClick={() => unenrollConfirm && handleUnenrollTotp(unenrollConfirm)}>
+              Remove 2FA
             </Button>
           </DialogActions>
         </Dialog>
