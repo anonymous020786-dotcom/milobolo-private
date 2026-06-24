@@ -1,0 +1,136 @@
+# VPS production compose — joins the existing zync nginx-proxy + acme-companion stack.
+# Ports 80/443 are owned by zync-nginx-proxy-1; we expose via VIRTUAL_HOST env vars.
+name: milobolo
+
+services:
+  # Init: write the Socket.IO upstream location block into the shared nginx vhost volume
+  # so nginx-proxy routes /socket.io/ WebSocket traffic to the signaling container.
+  nginx-config:
+    image: alpine:3.19
+    restart: "no"
+    volumes:
+      - zync_vhost:/etc/nginx/vhost.d
+    command: >-
+      sh -c "printf 'location /socket.io/ {\n
+        proxy_pass http://milobolo-signaling-1:4000;\n
+        proxy_http_version 1.1;\n
+        proxy_set_header Upgrade $$http_upgrade;\n
+        proxy_set_header Connection upgrade;\n
+        proxy_set_header Host $$host;\n
+        proxy_read_timeout 86400;\n
+        proxy_cache_bypass $$http_upgrade;\n
+      }\n
+      location /api/check-nsfw {\n
+        proxy_pass http://milobolo-signaling-1:4000;\n
+        proxy_http_version 1.1;\n
+        proxy_set_header Host $$host;\n
+      }\n' > /etc/nginx/vhost.d/chat.videodownloaders.cloud_location && echo nginx-config-done"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+        - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+        - NEXT_PUBLIC_SIGNALING_URL=https://chat.videodownloaders.cloud
+        - NEXT_PUBLIC_GA_ID=${NEXT_PUBLIC_GA_ID:-}
+        - NEXT_PUBLIC_RECAPTCHA_SITE_KEY=${NEXT_PUBLIC_RECAPTCHA_SITE_KEY:-}
+        - NEXT_PUBLIC_TURN_URL=turn:chat.videodownloaders.cloud:3478
+        - NEXT_PUBLIC_TURN_USERNAME=milobolo
+        - NEXT_PUBLIC_TURN_CREDENTIAL=${NEXT_PUBLIC_TURN_CREDENTIAL}
+        - NEXT_PUBLIC_R2_PUBLIC_URL=${NEXT_PUBLIC_R2_PUBLIC_URL:-}
+        - NEXT_PUBLIC_SITE_URL=https://chat.videodownloaders.cloud
+        - NEXT_PUBLIC_CONTACT_EMAIL=admin@api.zestcommerce.in
+    restart: always
+    expose:
+      - "3000"
+    environment:
+      - NODE_ENV=production
+      - SIGNALING_INTERNAL_URL=http://signaling:4000
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      # nginx-proxy picks these up to generate the server block + request SSL cert
+      - VIRTUAL_HOST=chat.videodownloaders.cloud
+      - VIRTUAL_PORT=3000
+      - LETSENCRYPT_HOST=chat.videodownloaders.cloud
+      - LETSENCRYPT_EMAIL=contact@videodownloaders.cloud
+    networks:
+      - milobolo
+      - zync_net
+    depends_on:
+      nginx-config:
+        condition: service_completed_successfully
+      signaling:
+        condition: service_started
+
+  signaling:
+    build: ./signaling
+    restart: always
+    expose:
+      - "4000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - RECAPTCHA_SECRET=${RECAPTCHA_SECRET_KEY:-}
+      - JWT_SECRET=${JWT_SECRET}
+      - SMTP_HOST=smtp.hostinger.com
+      - SMTP_PORT=587
+      - SMTP_SECURE=false
+      - SMTP_USER=admin@api.zestcommerce.in
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM_NAME=MiloBolo
+      - SITE_URL=https://chat.videodownloaders.cloud
+      - NODE_ENV=production
+    depends_on:
+      - redis
+    networks:
+      - milobolo
+      - zync_net
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - milobolo
+
+  coturn:
+    image: coturn/coturn:latest
+    restart: always
+    network_mode: host
+    command: >-
+      turnserver
+      --listening-port=3478
+      --listening-ip=0.0.0.0
+      --relay-ip=187.127.182.5
+      --external-ip=187.127.182.5
+      --min-port=49152
+      --max-port=65535
+      --user=milobolo:${NEXT_PUBLIC_TURN_CREDENTIAL}
+      --realm=chat.videodownloaders.cloud
+      --fingerprint
+      --no-tls
+      --no-dtls
+      --log-file=stdout
+      --simple-log
+
+volumes:
+  redis_data:
+  # Reference the existing zync nginx-proxy vhost volume to inject our custom location
+  zync_vhost:
+    external: true
+    name: zync_vhost
+
+networks:
+  milobolo:
+    driver: bridge
+  # Join the existing zync nginx-proxy network so nginx-proxy can reach our containers
+  zync_net:
+    external: true
+    name: zync_default
