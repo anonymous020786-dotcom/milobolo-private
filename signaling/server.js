@@ -25,11 +25,10 @@ let nsfwModel = null;
     // Load from local path baked into Docker image at build time (no CDN at runtime)
     const modelPath = process.env.NSFW_MODEL_PATH || "/app/nsfw_model/model.json";
     const fs = require("fs");
-    if (!fs.existsSync(modelPath)) {
-      console.warn("[nsfwjs] no local model found — NSFW check disabled");
-      return;
-    }
-    nsfwModel = await nsfwjs.load(`file://${modelPath}`, { size: 224 });
+    const modelUrl = fs.existsSync(modelPath)
+      ? `file://${modelPath}`
+      : "https://nsfwjs.com/quant_nsfw_mobilenet/"; // dev fallback
+    nsfwModel = await nsfwjs.load(modelUrl, { size: 224 });
     console.log("[nsfwjs] model loaded from", modelUrl);
   } catch (e) {
     console.warn("[nsfwjs] model failed to load — image NSFW check disabled:", e.message);
