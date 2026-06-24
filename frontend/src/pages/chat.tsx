@@ -30,6 +30,7 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import ImageIcon from "@mui/icons-material/Image";
 import DownloadIcon from "@mui/icons-material/Download";
+import LinkIcon from "@mui/icons-material/Link";
 import SignalCellularAltIcon from "@mui/icons-material/SignalCellularAlt";
 import SignalCellular2BarIcon from "@mui/icons-material/SignalCellular2Bar";
 import SignalCellular0BarIcon from "@mui/icons-material/SignalCellular0Bar";
@@ -570,12 +571,15 @@ export default function Chat() {
     const myGenderParam = urlParams?.get("gender") || "any";
     const wantGenderParam = urlParams?.get("wantGender") || "any";
     const collegeParam = urlParams?.get("college") === "1";
+    const inviteParam = urlParams?.get("invite") || null;
     socketRef.current?.emit("find_match", {
       mode, userId: user?.id || null,
       interests: isEnabled("interest_matching") ? interests : [],
       gender: myGenderParam,
       wantGender: wantGenderParam,
       college: collegeParam,
+      language: settings.defaultLanguage || null,
+      invite: inviteParam,
     });
   }, [mode, user, interests, isEnabled, getLocalStream]);
 
@@ -956,7 +960,17 @@ export default function Chat() {
                     ) : state === "ended" ? (
                       <Box textAlign="center" px={2}>
                         <Typography color="text.secondary" mb={2}>Stranger disconnected.</Typography>
-                        <Button variant="contained" onClick={startSearch} sx={{ borderRadius: 2 }}>New Conversation</Button>
+                        <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap">
+                          <Button variant="contained" onClick={startSearch} sx={{ borderRadius: 2 }}>New Conversation</Button>
+                          <Button variant="outlined" startIcon={<LinkIcon />} sx={{ borderRadius: 2 }}
+                            onClick={async () => {
+                              const r = await fetch("/api/room?create=1");
+                              const { url } = await r.json();
+                              navigator.clipboard.writeText(url);
+                            }}>
+                            Invite Friend
+                          </Button>
+                        </Stack>
                       </Box>
                     ) : null}
                   </Box>

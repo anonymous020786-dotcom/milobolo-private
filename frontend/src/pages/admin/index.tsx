@@ -50,6 +50,7 @@ export default function AdminPanel() {
   const [reportSearch, setReportSearch] = useState("");
   const [chatLogs, setChatLogs] = useState<any[]>([]);
   const [chatLogSearch, setChatLogSearch] = useState("");
+  const [screenshotReport, setScreenshotReport] = useState<any | null>(null);
 
   useEffect(() => {
     if (!authLoading && (!profile || !["admin", "superadmin"].includes(profile.role))) {
@@ -372,6 +373,7 @@ export default function AdminPanel() {
                       <TableRow>
                         <TableCell>Reason</TableCell>
                         <TableCell>Room</TableCell>
+                        <TableCell>Screenshot</TableCell>
                         <TableCell>Status</TableCell>
                         <TableCell>Date</TableCell>
                         <TableCell>Actions</TableCell>
@@ -380,8 +382,15 @@ export default function AdminPanel() {
                     <TableBody>
                       {filteredReports.map((r) => (
                         <TableRow key={r.id} hover>
-                          <TableCell>{r.reason}</TableCell>
+                          <TableCell sx={{ maxWidth: 200 }}>{r.reason}</TableCell>
                           <TableCell sx={{ fontSize: 11, fontFamily: "monospace" }}>{r.room_id?.slice(0, 10) || "—"}</TableCell>
+                          <TableCell>
+                            {r.screenshot_b64 ? (
+                              <Button size="small" variant="outlined" onClick={() => setScreenshotReport(r)}>
+                                View
+                              </Button>
+                            ) : "—"}
+                          </TableCell>
                           <TableCell>
                             <Chip label={r.status} size="small"
                               color={r.status === "pending" ? "warning" : r.status === "actioned" ? "error" : "default"} />
@@ -390,11 +399,24 @@ export default function AdminPanel() {
                             {new Date(r.created_at).toLocaleDateString("en-IN")}
                           </TableCell>
                           <TableCell>
-                            <Stack direction="row" spacing={0.5}>
+                            <Stack direction="row" spacing={0.5} flexWrap="wrap">
                               <Button size="small" onClick={() => updateReportStatus(r.id, "actioned")}
                                 disabled={r.status !== "pending"} color="error">Action</Button>
                               <Button size="small" onClick={() => updateReportStatus(r.id, "dismissed")}
                                 disabled={r.status !== "pending"}>Dismiss</Button>
+                              {r.reported_user_id && (
+                                <Button size="small" color="error" variant="contained"
+                                  disabled={r.status !== "pending"}
+                                  onClick={async () => {
+                                    await supabase.from("profiles").update({
+                                      is_banned: true, ban_reason: `Banned via report: ${r.reason}`,
+                                    }).eq("id", r.reported_user_id);
+                                    updateReportStatus(r.id, "actioned");
+                                    showMsg("success", "User banned");
+                                  }}>
+                                  Ban
+                                </Button>
+                              )}
                             </Stack>
                           </TableCell>
                         </TableRow>
@@ -593,6 +615,23 @@ export default function AdminPanel() {
         <DialogActions>
           <Button onClick={() => setBanDialog({ open: false, user: null })}>Cancel</Button>
           <Button variant="contained" color="error" onClick={banUser}>Ban User</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Screenshot viewer */}
+      <Dialog open={!!screenshotReport} onClose={() => setScreenshotReport(null)} maxWidth="md" fullWidth>
+        <DialogTitle>Report Screenshot — {screenshotReport?.reason}</DialogTitle>
+        <DialogContent>
+          {screenshotReport?.screenshot_b64 && (
+            <Box component="img"
+              src={screenshotReport.screenshot_b64.startsWith("data:") ? screenshotReport.screenshot_b64 : `data:image/png;base64,${screenshotReport.screenshot_b64}`}
+              alt="Report screenshot"
+              sx={{ width: "100%", borderRadius: 2, border: "1px solid rgba(255,255,255,0.08)" }}
+            />
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setScreenshotReport(null)}>Close</Button>
         </DialogActions>
       </Dialog>
     </Layout>
