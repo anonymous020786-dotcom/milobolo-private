@@ -1,46 +1,21 @@
 # VPS production compose — joins the existing zync nginx-proxy + acme-companion stack.
-# Ports 80/443 are owned by zync-nginx-proxy-1; we expose via VIRTUAL_HOST env vars.
+# Images are pre-built by GitHub Actions (.github/workflows/docker-build.yml).
+# Ports 80/443 are owned by zync-nginx-proxy-1; we register via VIRTUAL_HOST env vars.
 name: milobolo
 
 services:
-  # Init: write the Socket.IO upstream location block into the shared nginx vhost volume
-  # so nginx-proxy routes /socket.io/ WebSocket traffic to the signaling container.
+  # Init: write Socket.IO + signaling API location blocks into the shared nginx vhost
+  # volume so nginx-proxy routes WebSocket /socket.io/ traffic to the signaling container.
   nginx-config:
     image: alpine:3.19
     restart: "no"
     volumes:
       - zync_vhost:/etc/nginx/vhost.d
     command: >-
-      sh -c "printf 'location /socket.io/ {\n
-        proxy_pass http://milobolo-signaling-1:4000;\n
-        proxy_http_version 1.1;\n
-        proxy_set_header Upgrade $$http_upgrade;\n
-        proxy_set_header Connection upgrade;\n
-        proxy_set_header Host $$host;\n
-        proxy_read_timeout 86400;\n
-        proxy_cache_bypass $$http_upgrade;\n
-      }\n
-      location /api/check-nsfw {\n
-        proxy_pass http://milobolo-signaling-1:4000;\n
-        proxy_http_version 1.1;\n
-        proxy_set_header Host $$host;\n
-      }\n' > /etc/nginx/vhost.d/chat.videodownloaders.cloud_location && echo nginx-config-done"
+      sh -c "printf 'location /socket.io/ {\n  proxy_pass http://milobolo-signaling-1:4000;\n  proxy_http_version 1.1;\n  proxy_set_header Upgrade $$http_upgrade;\n  proxy_set_header Connection upgrade;\n  proxy_set_header Host $$host;\n  proxy_read_timeout 86400;\n  proxy_cache_bypass $$http_upgrade;\n}\nlocation /api/check-nsfw {\n  proxy_pass http://milobolo-signaling-1:4000;\n  proxy_http_version 1.1;\n  proxy_set_header Host $$host;\n}\n' > /etc/nginx/vhost.d/chat.videodownloaders.cloud_location && echo done"
 
   frontend:
-    build:
-      context: ./frontend
-      args:
-        - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
-        - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-        - NEXT_PUBLIC_SIGNALING_URL=https://chat.videodownloaders.cloud
-        - NEXT_PUBLIC_GA_ID=${NEXT_PUBLIC_GA_ID:-}
-        - NEXT_PUBLIC_RECAPTCHA_SITE_KEY=${NEXT_PUBLIC_RECAPTCHA_SITE_KEY:-}
-        - NEXT_PUBLIC_TURN_URL=turn:chat.videodownloaders.cloud:3478
-        - NEXT_PUBLIC_TURN_USERNAME=milobolo
-        - NEXT_PUBLIC_TURN_CREDENTIAL=${NEXT_PUBLIC_TURN_CREDENTIAL}
-        - NEXT_PUBLIC_R2_PUBLIC_URL=${NEXT_PUBLIC_R2_PUBLIC_URL:-}
-        - NEXT_PUBLIC_SITE_URL=https://chat.videodownloaders.cloud
-        - NEXT_PUBLIC_CONTACT_EMAIL=admin@api.zestcommerce.in
+    image: ghcr.io/zestcommerce841428-png/milobolo-frontend:latest
     restart: always
     expose:
       - "3000"
@@ -49,7 +24,6 @@ services:
       - SIGNALING_INTERNAL_URL=http://signaling:4000
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
       - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
-      # nginx-proxy picks these up to generate the server block + request SSL cert
       - VIRTUAL_HOST=chat.videodownloaders.cloud
       - VIRTUAL_PORT=3000
       - LETSENCRYPT_HOST=chat.videodownloaders.cloud
@@ -64,7 +38,7 @@ services:
         condition: service_started
 
   signaling:
-    build: ./signaling
+    image: ghcr.io/zestcommerce841428-png/milobolo-signaling:latest
     restart: always
     expose:
       - "4000"
@@ -73,7 +47,7 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
-      - RECAPTCHA_SECRET=${RECAPTCHA_SECRET_KEY:-}
+      - RECAPTCHA_SECRET=
       - JWT_SECRET=${JWT_SECRET}
       - SMTP_HOST=smtp.hostinger.com
       - SMTP_PORT=587
@@ -122,7 +96,6 @@ services:
 
 volumes:
   redis_data:
-  # Reference the existing zync nginx-proxy vhost volume to inject our custom location
   zync_vhost:
     external: true
     name: zync_vhost
@@ -130,7 +103,6 @@ volumes:
 networks:
   milobolo:
     driver: bridge
-  # Join the existing zync nginx-proxy network so nginx-proxy can reach our containers
   zync_net:
     external: true
     name: zync_default
