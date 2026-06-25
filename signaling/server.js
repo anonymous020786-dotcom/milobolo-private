@@ -1,4 +1,5 @@
 require("dotenv").config();
+const ws = require("ws");
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -81,7 +82,8 @@ redis.on("error", () => {});
 
 const supabase = createClient(
   process.env.SUPABASE_URL || "https://placeholder.supabase.co",
-  process.env.SUPABASE_SERVICE_KEY || "placeholder"
+  process.env.SUPABASE_SERVICE_KEY || "placeholder",
+  { realtime: { transport: ws } }
 );
 
 app.use(helmet());
