@@ -5,13 +5,17 @@ const http = require("http");
 const { Server } = require("socket.io");
 const helmet = require("helmet");
 const cors = require("cors");
-const { RateLimiterRedis } = require("rate-limiter-flexible");
 const Redis = require("ioredis");
 const { createClient } = require("@supabase/supabase-js");
 const { v4: uuidv4 } = require("uuid");
 // Node v18+ has fetch built-in; no require needed
 const mailer = require("./lib/mailer");
 const rateLimiter = require("./lib/rateLimiter");
+const { createAuth, STAFF_ROLES } = require("./lib/auth");
+const { createOtpStore, VALID_TYPES: OTP_TYPES } = require("./lib/otp");
+const mm = require("./lib/matchmaking");
+const games = require("./lib/games");
+const { escapeHtml, countryToFlag, isAcademicEmail, isEmail, str } = require("./lib/util");
 const BadWordsFilter = require("bad-words");
 const tf = require("@tensorflow/tfjs");
 const nsfwjs = require("nsfwjs");
@@ -59,6 +63,7 @@ async function classifyBuffer(buffer) {
 
 const app = express();
 const server = http.createServer(app);
+const startedAt = Date.now();
 
 const allowedOrigins = [
   process.env.SITE_URL || "https://chat.videodownloaders.cloud",
@@ -70,6 +75,7 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
   pingTimeout: 30000,
   pingInterval: 10000,
+  maxHttpBufferSize: 1e6, // voice notes are capped at 400 KB below
 });
 
 const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379", {
@@ -79,13 +85,21 @@ const redis = new Redis(process.env.REDIS_URL || "redis://localhost:6379", {
   enableOfflineQueue: false,
 });
 redis.on("error", () => {});
+redis.connect().catch(() => console.warn("[redis] unavailable — using in-memory fallbacks"));
 
+const supabaseEnabled = !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY);
 const supabase = createClient(
   process.env.SUPABASE_URL || "https://placeholder.supabase.co",
   process.env.SUPABASE_SERVICE_KEY || "placeholder",
-  { realtime: { transport: ws } }
+  { realtime: { transport: ws }, auth: { persistSession: false, autoRefreshToken: false } }
 );
+if (!supabaseEnabled) console.warn("[supabase] SUPABASE_URL / SUPABASE_SERVICE_KEY not set — accounts, history and reports disabled");
 
+const auth = createAuth(supabase, { enabled: supabaseEnabled });
+const otpStore = createOtpStore(supabase);
+
+// Behind nginx-proxy: use X-Forwarded-For so per-IP limits aren't shared by everyone
+app.set("trust proxy", 1);
 app.use(helmet());
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json({ limit: "10kb" }));
@@ -93,100 +107,100 @@ app.use(express.json({ limit: "10kb" }));
 // ─── HTTP rate limiters ─────────────────────────────────────
 const httpLimiter = rateLimiter.createHttpLimiter(redis);
 const otpLimiter = rateLimiter.createOtpLimiter(redis);
+const otpEmailLimiter = rateLimiter.createLimiter(redis, { keyPrefix: "otp_email", points: 3, duration: 600 });
 const contactLimiter = rateLimiter.createContactLimiter(redis);
+const socketLimiter = rateLimiter.createLimiter(redis, { keyPrefix: "socket_limit", points: 30, duration: 60 });
+const msgLimiter = rateLimiter.createLimiter(redis, { keyPrefix: "msg_limit", points: 20, duration: 10 });
+const dmLimiter = rateLimiter.createLimiter(redis, { keyPrefix: "dm_limit", points: 30, duration: 60 });
 
-app.use("/api/send-otp", (req, res, next) => {
-  otpLimiter.consume(req.ip)
-    .then(() => next())
-    .catch((e) => {
-      if (e && e.msBeforeNext != null) return res.status(429).json({ error: "Too many OTP requests. Try again later." });
-      next();
-    });
-});
+function limit(limiter, keyFn, message) {
+  return (req, res, next) => {
+    limiter.consume(keyFn(req))
+      .then(() => next())
+      .catch((e) => {
+        if (rateLimiter.isLimited(e)) return res.status(429).json({ error: message });
+        next();
+      });
+  };
+}
 
 app.use((req, res, next) => {
   if (req.path === "/api/send-otp") return next();
-  httpLimiter.consume(req.ip)
-    .then(() => next())
-    .catch((e) => {
-      if (e && e.msBeforeNext != null) return res.status(429).json({ error: "Too many requests" });
-      next();
-    });
+  limit(httpLimiter, (r) => r.ip, "Too many requests")(req, res, next);
 });
 
 // ─── OTP endpoints ─────────────────────────────────────────
-app.post("/api/send-otp", async (req, res) => {
+app.post("/api/send-otp", limit(otpLimiter, (r) => r.ip, "Too many OTP requests. Try again later."), async (req, res) => {
   try {
-    const { email, type } = req.body;
-    if (!email || !type) return res.status(400).json({ error: "Invalid request" });
-    const validTypes = ["verify", "reset", "delete", "change_email", "college_verify"];
-    if (!validTypes.includes(type)) return res.status(400).json({ error: "Invalid OTP type" });
+    const { email, type } = req.body || {};
+    if (!isEmail(email) || !OTP_TYPES.includes(type)) return res.status(400).json({ error: "Invalid request" });
+    if (type === "college_verify" && !isAcademicEmail(email)) {
+      return res.status(400).json({ error: "Use your institutional email (.edu, .ac.in, .edu.in …)." });
+    }
+    try { await otpEmailLimiter.consume(email.toLowerCase()); }
+    catch (e) { if (rateLimiter.isLimited(e)) return res.status(429).json({ error: "Too many codes sent to this email. Try again in 10 minutes." }); }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-    await supabase.from("otp_codes").upsert({
-      email, otp_hash: otp, type,
-      expires_at: expiresAt.toISOString(), used: false,
-    });
+    const otp = await otpStore.issue(email, type);
     await mailer.sendOTP({ email, otp, type });
     res.json({ success: true });
   } catch (err) {
-    console.error("OTP error:", err);
+    console.error("OTP error:", err.message);
     res.status(500).json({ error: "Failed to send OTP" });
   }
 });
 
 app.post("/api/verify-otp", async (req, res) => {
   try {
-    const { email, otp, type } = req.body;
-    const { data, error } = await supabase
-      .from("otp_codes").select("*")
-      .eq("email", email).eq("otp_hash", otp).eq("type", type)
-      .eq("used", false).gte("expires_at", new Date().toISOString()).single();
-    if (error || !data) return res.status(400).json({ error: "Invalid or expired OTP" });
-    await supabase.from("otp_codes").update({ used: true }).eq("id", data.id);
+    const { email, otp, type } = req.body || {};
+    if (!isEmail(email) || !OTP_TYPES.includes(type)) return res.status(400).json({ error: "Invalid request" });
+    // College codes must go through /api/college/verify so the result is recorded server-side
+    if (type === "college_verify") return res.status(400).json({ error: "Use /api/college/verify" });
+    const result = await otpStore.verify(email, String(otp || ""), type);
+    if (!result.ok) return res.status(400).json({ error: result.error });
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: "Verification failed" });
   }
 });
 
-// ─── Online count ───────────────────────────────────────────
-app.get("/api/online-count", async (req, res) => {
-  try {
-    const count = await redis.get("online:count") || "0";
-    res.json({ count: parseInt(count) });
-  } catch {
-    res.json({ count: memOnlineCount });
+// ─── College verification (server decides, not the client) ─
+app.post("/api/college/verify", auth.requireUser(), async (req, res) => {
+  const { email, otp } = req.body || {};
+  if (!isAcademicEmail(email)) return res.status(400).json({ error: "Not an institutional email address." });
+  const result = await otpStore.verify(email, String(otp || ""), "college_verify");
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  const { error } = await supabase.from("profiles")
+    .update({ college_verified: true, college_email: email.toLowerCase() })
+    .eq("id", req.auth.userId);
+  if (error) return res.status(500).json({ error: "Could not save verification." });
+  for (const sid of userSockets.get(req.auth.userId) || []) {
+    const p = participants.get(sid);
+    if (p?.profile) p.profile.college_verified = true;
   }
+  res.json({ success: true });
+});
+
+// ─── Online count ───────────────────────────────────────────
+app.get("/api/online-count", (req, res) => {
+  res.json({ count: onlineCount() });
 });
 
 // ─── Contact form ────────────────────────────────────────────
-app.post("/api/contact", async (req, res, next) => {
-  contactLimiter.consume(req.ip)
-    .then(() => next())
-    .catch((e) => {
-      if (e && e.msBeforeNext != null) {
-        const retryAfter = Math.ceil(e.msBeforeNext / 1000 / 60);
-        return res.status(429).json({ error: `Too many contact submissions. Try again in ${retryAfter} minute${retryAfter !== 1 ? "s" : ""}.` });
-      }
-      next();
-    });
-}, async (req, res) => {
+app.post("/api/contact", limit(contactLimiter, (r) => r.ip, "Too many contact submissions. Try again later."), async (req, res) => {
   const { name, email, subject, message, recaptchaToken } = req.body || {};
   if (!name || !email || !message) return res.status(400).json({ error: "Missing required fields." });
-  if (typeof email !== "string" || !email.includes("@")) return res.status(400).json({ error: "Invalid email." });
+  if (!isEmail(email)) return res.status(400).json({ error: "Invalid email." });
+  if (String(name).length > 100 || String(subject || "").length > 200) return res.status(400).json({ error: "Field too long." });
 
   // reCAPTCHA verification (skip in dev)
-  const siteKey = process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || "";
-  const isDevKey = !siteKey || siteKey.includes("PLACEHOLDER") || siteKey === "6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MmuKj8bi";
-  if (!isDevKey && recaptchaToken && recaptchaToken !== "dev-skip") {
+  const secret = process.env.RECAPTCHA_SECRET_KEY || process.env.RECAPTCHA_SECRET;
+  if (secret && recaptchaToken && recaptchaToken !== "dev-skip") {
     try {
-      const resp = await fetch(
-        `https://www.google.com/recaptcha/api/siteverify?secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`,
-        { method: "POST" }
-      );
+      const resp = await fetch("https://www.google.com/recaptcha/api/siteverify", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ secret, response: recaptchaToken }),
+      });
       const data = await resp.json();
       if (!data.success || data.score < 0.5) return res.status(403).json({ error: "reCAPTCHA verification failed." });
     } catch {}
@@ -195,6 +209,13 @@ app.post("/api/contact", async (req, res, next) => {
   const adminEmail = process.env.SMTP_USER;
   const contactEmail = process.env.CONTACT_EMAIL || adminEmail;
   if (!adminEmail) return res.status(503).json({ error: "Email service not configured." });
+
+  // Everything user-supplied is escaped before it goes into HTML mail
+  const n = escapeHtml(name);
+  const e = escapeHtml(email);
+  const s = escapeHtml(subject || "(none)");
+  const body = escapeHtml(String(message).slice(0, 2000));
+  const preview = escapeHtml(String(message).slice(0, 200)) + (String(message).length > 200 ? "…" : "");
 
   try {
     const { createTransport } = require("nodemailer");
@@ -208,18 +229,18 @@ app.post("/api/contact", async (req, res, next) => {
     await transporter.sendMail({
       from: `"MiloBolo Contact" <${adminEmail}>`,
       to: contactEmail,
-      replyTo: `"${name}" <${email}>`,
-      subject: `[MiloBolo Contact] ${subject || "New message from " + name}`,
+      replyTo: { name: String(name).slice(0, 100), address: email },
+      subject: `[MiloBolo Contact] ${String(subject || "New message from " + name).replace(/[\r\n]/g, " ").slice(0, 200)}`,
       html: `
         <div style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:32px;background:#0f0f0f;color:#fff;border-radius:12px;">
           <h2 style="color:#6C63FF;">New Contact Message</h2>
           <table style="width:100%;border-collapse:collapse;margin-bottom:24px;">
-            <tr><td style="padding:8px;color:#999;width:80px;">Name</td><td style="padding:8px;">${name}</td></tr>
-            <tr><td style="padding:8px;color:#999;">Email</td><td style="padding:8px;"><a href="mailto:${email}" style="color:#6C63FF;">${email}</a></td></tr>
-            <tr><td style="padding:8px;color:#999;">Subject</td><td style="padding:8px;">${subject || "(none)"}</td></tr>
+            <tr><td style="padding:8px;color:#999;width:80px;">Name</td><td style="padding:8px;">${n}</td></tr>
+            <tr><td style="padding:8px;color:#999;">Email</td><td style="padding:8px;"><a href="mailto:${e}" style="color:#6C63FF;">${e}</a></td></tr>
+            <tr><td style="padding:8px;color:#999;">Subject</td><td style="padding:8px;">${s}</td></tr>
           </table>
           <div style="background:#1a1a2e;border-radius:8px;padding:20px;">
-            <p style="margin:0;line-height:1.7;white-space:pre-wrap;">${message.slice(0, 2000)}</p>
+            <p style="margin:0;line-height:1.7;white-space:pre-wrap;">${body}</p>
           </div>
           <p style="font-size:12px;color:#666;margin-top:16px;">Sent from MiloBolo contact form • ${new Date().toISOString()}</p>
         </div>
@@ -233,9 +254,9 @@ app.post("/api/contact", async (req, res, next) => {
       subject: "We received your message — MiloBolo",
       html: `
         <div style="font-family:sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#0f0f0f;color:#fff;border-radius:12px;">
-          <h2 style="color:#6C63FF;">Thanks, ${name}!</h2>
+          <h2 style="color:#6C63FF;">Thanks, ${n}!</h2>
           <p style="line-height:1.7;">We received your message and will get back to you within 48 hours.</p>
-          <p style="line-height:1.7;color:#999;">Your message: <em>${message.slice(0, 200)}${message.length > 200 ? "…" : ""}</em></p>
+          <p style="line-height:1.7;color:#999;">Your message: <em>${preview}</em></p>
           <p style="font-size:12px;color:#666;margin-top:24px;">MiloBolo — Free Random Chat Forever</p>
         </div>
       `,
@@ -248,19 +269,32 @@ app.post("/api/contact", async (req, res, next) => {
   }
 });
 
-app.get("/health", (_, res) => res.json({ status: "ok", timestamp: Date.now() }));
+app.get("/health", async (_, res) => {
+  let db = supabaseEnabled ? "unknown" : "disabled";
+  if (supabaseEnabled) {
+    try {
+      const { error } = await supabase.from("feature_flags").select("key", { head: true, count: "exact" });
+      db = error ? "error" : "ok";
+    } catch { db = "error"; }
+  }
+  res.json({
+    status: "ok",
+    timestamp: Date.now(),
+    uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+    redis: redis.status === "ready" ? "ok" : "unavailable",
+    database: db,
+    nsfwModel: nsfwModel ? "loaded" : "unavailable",
+    online: onlineCount(),
+  });
+});
 
-// ── Invite token pre-registration ────────────────────────────
-app.post("/api/invite", express.json({ limit: "1kb" }), async (req, res) => {
+// ── Invite token pre-registration (server-to-server from Next.js) ──
+app.post("/api/invite", express.json({ limit: "1kb" }), (req, res) => {
   const { token } = req.body || {};
-  if (!token || typeof token !== "string" || token.length < 10) {
+  if (!token || typeof token !== "string" || token.length < 10 || token.length > 64) {
     return res.status(400).json({ error: "Invalid token" });
   }
-  try {
-    await redis.set(`invite:${token}`, "pending", "EX", 600); // 10-min TTL
-  } catch {
-    memSocketMeta[`__invite_${token}`] = "pending";
-  }
+  invites.set(token, { waiting: null, exp: Date.now() + 10 * 60_000 });
   res.json({ ok: true });
 });
 
@@ -285,65 +319,89 @@ app.post("/api/check-nsfw",
   }
 );
 
-// ─── Socket.io rate limiters ────────────────────────────────
-const socketLimiter = new RateLimiterRedis({
-  storeClient: redis, keyPrefix: "socket_limit",
-  points: 30, duration: 60,
-});
+// ═══════════════════════════════════════════════════════════
+// In-memory state (one Socket.IO instance owns every connection)
+// ═══════════════════════════════════════════════════════════
+const participants = new Map(); // socketId → participant
+const waiting = new Map();      // mode → Set<socketId> (insertion order = wait order)
+const rooms = new Map();        // roomId → room
+const endedRooms = new Map();   // roomId → { members: {socketId: userId}, mode, endedAt } — for ratings/reports after a chat
+const userSockets = new Map();  // userId → Set<socketId>
+const fpByUser = new Map();     // userId → Set<fpId> (for fingerprint bans)
+const invites = new Map();      // token → { waiting: socketId|null, exp }
+const avoidStore = new Map();   // identityKey → { keys: Set, exp }
+const reportPairs = new Set();  // `${reporterKey}>${reportedKey}` — one counted report per pair
+const bannedFps = new Set();
+const spyChatters = new Set();  // socketIds waiting as spy-mode chatters
+const spyWaiters = new Map();   // spy socketId → question
+const stats = { matches: [], waitTimes: {}, pending: { total: 0, video: 0, text: 0, voice: 0, duration: 0 } };
 
-const msgLimiter = new RateLimiterRedis({
-  storeClient: redis, keyPrefix: "msg_limit",
-  points: 20, duration: 10,
-});
+const MODES = ["video", "text", "voice", "speed_dating"];
+const AVOID_TTL = 24 * 3600_000;
+const ENDED_ROOM_TTL = 10 * 60_000;
+const AUTO_BAN_THRESHOLD = 10;
 
-io.use(async (socket, next) => {
+function onlineCount() {
+  let n = 0;
+  for (const p of participants.values()) if (!p.presenceOnly) n++;
+  return n;
+}
+
+let onlineDirty = false;
+function markOnlineChanged() { onlineDirty = true; }
+setInterval(() => {
+  if (!onlineDirty) return;
+  onlineDirty = false;
+  const count = onlineCount();
+  io.emit("online_count", { count });
+  redis.set("online:count", count).catch(() => {});
+}, 2000);
+
+// Load persisted fingerprint bans
+(async () => {
+  if (!supabaseEnabled) return;
   try {
-    await socketLimiter.consume(socket.handshake.address);
-    next();
-  } catch {
-    next(new Error("Rate limit exceeded"));
+    const { data } = await supabase.from("banned_fingerprints").select("fingerprint");
+    (data || []).forEach((r) => bannedFps.add(r.fingerprint));
+    if (bannedFps.size) console.log(`[bans] loaded ${bannedFps.size} fingerprint bans`);
+  } catch {}
+})();
+
+async function isFpBanned(fpId) {
+  if (bannedFps.has(fpId)) return true;
+  try { return !!(await redis.get(`fp_ban:${fpId}`)); } catch { return false; }
+}
+
+async function banFingerprints(userId, reason, adminId = null) {
+  const fps = [...(fpByUser.get(userId) || [])];
+  for (const fp of fps) {
+    bannedFps.add(fp);
+    redis.set(`fp_ban:${fp}`, "1").catch(() => {});
+    if (supabaseEnabled) {
+      await supabase.from("banned_fingerprints").upsert({ fingerprint: fp, reason, banned_by: adminId }).then(() => {}, () => {});
+    }
   }
-});
-
-// ─── In-memory fallbacks ────────────────────────────────────
-let memOnlineCount = 0;
-const memQueues = {};
-const memSocketMeta = {};
-
-function memQueuePush(key, val) {
-  if (!memQueues[key]) memQueues[key] = [];
-  memQueues[key].push(val);
-}
-function memQueuePop(key) {
-  if (!memQueues[key] || !memQueues[key].length) return null;
-  return memQueues[key].shift();
-}
-function memQueueRemove(key, val) {
-  if (memQueues[key]) memQueues[key] = memQueues[key].filter((v) => v !== val);
+  return fps.length;
 }
 
-async function updateOnlineCount(delta) {
-  try {
-    const count = await redis.incrby("online:count", delta);
-    const safeCount = Math.max(0, count);
-    if (safeCount !== count) await redis.set("online:count", 0);
-    memOnlineCount = safeCount;
-    io.emit("online_count", { count: safeCount });
-  } catch {
-    memOnlineCount = Math.max(0, memOnlineCount + delta);
-    io.emit("online_count", { count: memOnlineCount });
+function kickUser(userId, reason) {
+  let n = 0;
+  for (const sid of [...(userSockets.get(userId) || [])]) {
+    const s = io.sockets.sockets.get(sid);
+    if (s) { s.emit("banned", { reason }); s.disconnect(true); n++; }
   }
+  return n;
 }
 
-// ─── IP country lookup ──────────────────────────────────────
+// ── IP country lookup ──────────────────────────────────────
 const countryCache = new Map();
 async function getCountry(ip) {
-  if (!ip || ip === "::1" || ip.startsWith("127.") || ip.startsWith("172.") || ip.startsWith("192.168.")) {
+  if (!ip || ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127.") || ip.startsWith("172.") || ip.startsWith("192.168.") || ip.startsWith("10.")) {
     return { country: "IN", countryName: "India", flag: "🇮🇳" };
   }
   if (countryCache.has(ip)) return countryCache.get(ip);
   try {
-    const r = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode,country`, { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`http://ip-api.com/json/${encodeURIComponent(ip)}?fields=countryCode,country`, { signal: AbortSignal.timeout(2000) });
     const d = await r.json();
     const result = { country: d.countryCode || "?", countryName: d.country || "Unknown", flag: countryToFlag(d.countryCode) };
     countryCache.set(ip, result);
@@ -354,559 +412,917 @@ async function getCountry(ip) {
   }
 }
 
-function countryToFlag(code) {
-  if (!code || code.length !== 2) return "🌐";
-  return String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1F1E0 + c.charCodeAt(0) - 65));
+// ── Avoid lists ("don't match me with this person again") ──
+function myIdentityKeys(p) {
+  const keys = mm.identityKeys(p);
+  return keys.length ? keys : [`s:${p.id}`];
 }
 
-// ─── Matchmaking helpers ────────────────────────────────────
-// Gender queue key: waiting:<mode>:gender:<myGender>_want:<wantGender>
-// Only gender-filtered users sit in gender queues; "any" users sit in the global queue only.
-async function findMatch(socketId, mode, interests, country, myGender, wantGender, college, language) {
-  const genderPrefix = (wantGender && wantGender !== "any") ? `gender:${wantGender}:` : "";
-  const ns = college ? `college:${mode}` : `waiting:${mode}`;
-  try {
-    // College pool is isolated — only match within it
-    if (college) {
-      const waitingId = await redis.lpop(`${ns}:any`);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-      return null;
+function collectAvoid(p) {
+  const out = new Set();
+  const now = Date.now();
+  for (const k of myIdentityKeys(p)) {
+    const entry = avoidStore.get(k);
+    if (!entry) continue;
+    if (entry.exp < now) { avoidStore.delete(k); continue; }
+    entry.keys.forEach((x) => out.add(x));
+  }
+  return out;
+}
+
+function addAvoid(p, other) {
+  const targetKeys = mm.identityKeys(other);
+  if (!targetKeys.length) return;
+  for (const k of myIdentityKeys(p)) {
+    const entry = avoidStore.get(k) || { keys: new Set(), exp: 0 };
+    targetKeys.forEach((t) => entry.keys.add(t));
+    entry.exp = Date.now() + AVOID_TTL;
+    avoidStore.set(k, entry);
+  }
+  p.avoid = collectAvoid(p);
+}
+
+// ── Badges shown to the stranger (no identity revealed) ────
+function badgesFor(p) {
+  const b = [];
+  if (!p.userId) return b;
+  b.push("member");
+  if (p.profile?.is_verified) b.push("verified");
+  if (p.profile?.college_verified) b.push("college");
+  if ((p.profile?.karma || 0) >= 10) b.push("trusted");
+  return b;
+}
+
+// ── Waiting queues ─────────────────────────────────────────
+function queueFor(mode) {
+  if (!waiting.has(mode)) waiting.set(mode, new Set());
+  return waiting.get(mode);
+}
+
+function removeFromWaiting(p) {
+  for (const q of waiting.values()) q.delete(p.id);
+  spyChatters.delete(p.id);
+  spyWaiters.delete(p.id);
+  if (p.state === "waiting") p.state = "idle";
+}
+
+function waitingCandidates(mode) {
+  const out = [];
+  for (const sid of queueFor(mode)) {
+    const c = participants.get(sid);
+    if (c && c.state === "waiting" && io.sockets.sockets.has(sid)) out.push(c);
+    else queueFor(mode).delete(sid); // stale entry
+  }
+  return out;
+}
+
+function recordWait(p) {
+  if (!p.waitingSince) return;
+  const list = stats.waitTimes[p.mode] || (stats.waitTimes[p.mode] = []);
+  list.push(Date.now() - p.waitingSince);
+  if (list.length > 50) list.shift();
+  p.waitingSince = null;
+}
+
+function avgWait(mode) {
+  const list = stats.waitTimes[mode.replace(/^college:/, "")] || [];
+  if (!list.length) return null;
+  return Math.round(list.reduce((a, b) => a + b, 0) / list.length / 1000);
+}
+
+// Tell every waiting socket how busy its queue is (every 4 s)
+setInterval(() => {
+  for (const mode of [...waiting.keys()]) {
+    const list = waitingCandidates(mode);
+    list.forEach((p, i) => {
+      p.socket.emit("queue_status", {
+        position: i + 1,
+        waiting: list.length,
+        avgWaitSeconds: avgWait(mode),
+        waitedSeconds: p.waitingSince ? Math.round((Date.now() - p.waitingSince) / 1000) : 0,
+      });
+    });
+  }
+}, 4000);
+
+// ── Rooms ──────────────────────────────────────────────────
+function peerInfo(me, other, room) {
+  return {
+    roomId: room.id,
+    peer: other.id,
+    matchedInterest: room.matchedInterest,
+    sharedInterests: room.shared,
+    peerInterests: other.interests || [],
+    peerCountry: other.geo || null,
+    myCountry: me.geo || null,
+    peerGender: other.gender || "any",
+    peerBadges: badgesFor(other),
+    peerIsMember: !!other.userId,
+    invited: !!room.invited,
+  };
+}
+
+function createPairRoom(initiator, other, { shared = [], invited = false, roomId = uuidv4() } = {}) {
+  const room = {
+    id: roomId, kind: "pair", mode: initiator.mode,
+    members: [initiator.id, other.id],
+    startedAt: Date.now(), msgCount: 0,
+    matchedInterest: shared[0] || null, shared, invited,
+    game: null, sd: {},
+  };
+  rooms.set(room.id, room);
+  for (const p of [initiator, other]) {
+    removeFromWaiting(p);
+    recordWait(p);
+    p.state = "paired";
+    p.roomId = room.id;
+    p.socket.join(room.id);
+  }
+  stats.matches.push(Date.now());
+  initiator.socket.emit("match_found", { ...peerInfo(initiator, other, room), isInitiator: true });
+  other.socket.emit("match_found", { ...peerInfo(other, initiator, room), isInitiator: false });
+  return room;
+}
+
+function createSpyRoom(aId, bId, spyId, question) {
+  const room = {
+    id: uuidv4(), kind: "spy", mode: "spy",
+    members: [aId, bId], spyId, question,
+    roles: { [aId]: "chatter_a", [bId]: "chatter_b" },
+    startedAt: Date.now(), msgCount: 0,
+  };
+  if (spyId) room.roles[spyId] = "spy";
+  rooms.set(room.id, room);
+  const all = spyId ? [aId, bId, spyId] : [aId, bId];
+  for (const sid of all) {
+    const p = participants.get(sid);
+    if (!p) continue;
+    removeFromWaiting(p);
+    p.state = "paired";
+    p.roomId = room.id;
+    p.socket.join(room.id);
+  }
+  const a = participants.get(aId);
+  const b = participants.get(bId);
+  a?.socket.emit("spy_match_found", { roomId: room.id, question, role: "chatter_a", peer: bId, peerCountry: b?.geo });
+  b?.socket.emit("spy_match_found", { roomId: room.id, question, role: "chatter_b", peer: aId, peerCountry: a?.geo });
+  if (spyId) participants.get(spyId)?.socket.emit("spy_match_found", { roomId: room.id, question, role: "spy" });
+  return room;
+}
+
+function roomOf(socket, rid) {
+  if (typeof rid !== "string") return null;
+  const room = rooms.get(rid);
+  if (!room) return null;
+  const isMember = room.members.includes(socket.id) || room.spyId === socket.id;
+  return isMember ? room : null;
+}
+
+function otherMember(room, sid) {
+  return room.members.find((m) => m !== sid) || null;
+}
+
+function endRoom(roomId, leaverId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  rooms.delete(roomId);
+
+  const everyone = room.spyId ? [...room.members, room.spyId] : [...room.members];
+  const memberUsers = {};
+  for (const sid of everyone) {
+    const p = participants.get(sid);
+    if (p) memberUsers[sid] = p.userId || null;
+    if (sid === leaverId) continue;
+    if (room.kind === "spy") {
+      // Spy leaving ends the discussion; a chatter leaving ends it for everyone
+      io.to(sid).emit(leaverId === room.spyId ? "spy_ended" : "peer_left");
+    } else {
+      io.to(sid).emit("peer_left");
     }
-    // Language-preferring users: try language queue first
-    if (language) {
-      const langKey = `waiting:${mode}:lang:${language}`;
-      const waitingId = await redis.lpop(langKey);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-    }
-    // If user wants a specific gender, check gender queue first
-    if (genderPrefix) {
-      const gKey = `waiting:${mode}:${genderPrefix}any`;
-      const waitingId = await redis.lpop(gKey);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-    }
-    // Same-country interest match first
-    if (country && country !== "?") {
-      for (const interest of interests.slice(0, 5)) {
-        const key = `waiting:${mode}:${country}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
-        const waitingId = await redis.lpop(key);
-        if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: interest };
-      }
-      const countryKey = `waiting:${mode}:${country}:any`;
-      const waitingId = await redis.lpop(countryKey);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-    }
-    // Global interest match
-    for (const interest of interests.slice(0, 5)) {
-      const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
-      const waitingId = await redis.lpop(key);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: interest };
-    }
-    // Global general queue
-    const waitingId = await redis.lpop(`waiting:${mode}:any`);
-    if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-    return null;
-  } catch {
-    if (college) {
-      const waitingId = memQueuePop(`${ns}:any`);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-      return null;
-    }
-    if (language) {
-      const waitingId = memQueuePop(`waiting:${mode}:lang:${language}`);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-    }
-    if (genderPrefix) {
-      const gKey = `waiting:${mode}:${genderPrefix}any`;
-      const waitingId = memQueuePop(gKey);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-    }
-    for (const interest of interests.slice(0, 5)) {
-      const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
-      const waitingId = memQueuePop(key);
-      if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: interest };
-    }
-    const waitingId = memQueuePop(`waiting:${mode}:any`);
-    if (waitingId && waitingId !== socketId) return { waitingId, matchedInterest: null };
-    return null;
+  }
+  for (const sid of everyone) {
+    const p = participants.get(sid);
+    io.sockets.sockets.get(sid)?.leave(roomId);
+    if (p && p.roomId === roomId) { p.state = "idle"; p.roomId = null; }
+  }
+
+  endedRooms.set(roomId, { members: memberUsers, mode: room.mode, endedAt: Date.now(), sd: room.sd || {} });
+  persistRoom(room, memberUsers).catch(() => {});
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, r] of endedRooms) if (now - r.endedAt > ENDED_ROOM_TTL) endedRooms.delete(id);
+  for (const [t, inv] of invites) if (inv.exp < now) invites.delete(t);
+  stats.matches = stats.matches.filter((t) => now - t < 3600_000);
+}, 60_000);
+
+// Chat history + daily stats are written by the server so users can't fake them
+async function persistRoom(room, memberUsers) {
+  const duration = Math.round((Date.now() - room.startedAt) / 1000);
+  stats.pending.total += 1;
+  stats.pending.duration += duration;
+  if (room.mode === "video" || room.mode === "speed_dating") stats.pending.video += 1;
+  else if (room.mode === "voice") stats.pending.voice += 1;
+  else stats.pending.text += 1;
+
+  if (!supabaseEnabled || duration < 5) return;
+  const rows = [];
+  for (const sid of room.members) {
+    const userId = memberUsers[sid];
+    if (!userId) continue;
+    const p = participants.get(sid);
+    if (p?.profile?.settings && p.profile.settings.saveHistory === false) continue;
+    rows.push({
+      user_id: userId, mode: room.mode, room_id: room.id,
+      duration_seconds: duration, message_count: room.msgCount,
+      matched_interest: room.matchedInterest || null,
+      started_at: new Date(room.startedAt).toISOString(),
+      ended_at: new Date().toISOString(),
+    });
+  }
+  if (rows.length) {
+    const { error } = await supabase.from("chat_history").insert(rows);
+    if (error) console.warn("[history] insert failed:", error.message);
   }
 }
 
-async function enqueue(socketId, mode, interests, country, myGender, college, language) {
-  const ttl = 300;
+setInterval(async () => {
+  const p = stats.pending;
+  if (!supabaseEnabled || p.total === 0) return;
+  stats.pending = { total: 0, video: 0, text: 0, voice: 0, duration: 0 };
+  const date = new Date().toISOString().slice(0, 10);
   try {
-    if (college) {
-      await redis.rpush(`college:${mode}:any`, socketId);
-      await redis.expire(`college:${mode}:any`, ttl);
-      return;
-    }
-    // Language queue
-    if (language) {
-      await redis.rpush(`waiting:${mode}:lang:${language}`, socketId);
-      await redis.expire(`waiting:${mode}:lang:${language}`, ttl);
-    }
-    // Gender queue (so gender-seeking users can find them)
-    if (myGender && myGender !== "any") {
-      await redis.rpush(`waiting:${mode}:gender:${myGender}:any`, socketId);
-      await redis.expire(`waiting:${mode}:gender:${myGender}:any`, ttl);
-    }
-    // Country queue
-    if (country && country !== "?") {
-      await redis.rpush(`waiting:${mode}:${country}:any`, socketId);
-      await redis.expire(`waiting:${mode}:${country}:any`, ttl);
-    }
-    // Global queue
-    await redis.rpush(`waiting:${mode}:any`, socketId);
-    await redis.expire(`waiting:${mode}:any`, ttl);
-    for (const interest of interests.slice(0, 5)) {
-      const key = `waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`;
-      await redis.rpush(key, socketId);
-      await redis.expire(key, ttl);
-    }
-  } catch {
-    if (college) {
-      memQueuePush(`college:${mode}:any`, socketId);
-      return;
-    }
-    if (language) memQueuePush(`waiting:${mode}:lang:${language}`, socketId);
-    if (myGender && myGender !== "any") {
-      memQueuePush(`waiting:${mode}:gender:${myGender}:any`, socketId);
-    }
-    memQueuePush(`waiting:${mode}:any`, socketId);
-    for (const interest of interests.slice(0, 5)) {
-      memQueuePush(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, socketId);
-    }
+    const { data } = await supabase.from("chat_stats").select("*").eq("date", date).maybeSingle();
+    await supabase.from("chat_stats").upsert({
+      date,
+      total_sessions: (data?.total_sessions || 0) + p.total,
+      video_sessions: (data?.video_sessions || 0) + p.video,
+      text_sessions: (data?.text_sessions || 0) + p.text,
+      voice_sessions: (data?.voice_sessions || 0) + p.voice,
+      total_duration_seconds: (data?.total_duration_seconds || 0) + p.duration,
+      unique_users: Math.max(data?.unique_users || 0, userSockets.size),
+      reports_filed: data?.reports_filed || 0,
+    });
+  } catch (e) {
+    console.warn("[stats] flush failed:", e.message);
+  }
+}, 60_000);
+
+// ── Friends / presence ─────────────────────────────────────
+async function loadFriendIds(userId) {
+  if (!supabaseEnabled || !userId) return new Set();
+  const { data } = await supabase.from("connections").select("requester_id, receiver_id")
+    .eq("status", "accepted").or(`requester_id.eq.${userId},receiver_id.eq.${userId}`);
+  return new Set((data || []).map((c) => (c.requester_id === userId ? c.receiver_id : c.requester_id)));
+}
+
+async function loadBlocks(userId) {
+  if (!supabaseEnabled || !userId) return new Set();
+  const { data } = await supabase.from("user_blocks").select("blocker_id, blocked_id")
+    .or(`blocker_id.eq.${userId},blocked_id.eq.${userId}`);
+  return new Set((data || []).map((b) => (b.blocker_id === userId ? b.blocked_id : b.blocker_id)));
+}
+
+function isOnline(userId) {
+  return (userSockets.get(userId)?.size || 0) > 0;
+}
+
+function emitToUser(userId, event, payload) {
+  for (const sid of userSockets.get(userId) || []) io.to(sid).emit(event, payload);
+}
+
+async function friendsOf(p, refresh = false) {
+  if (!p.userId) return new Set();
+  if (!p.friends || refresh) p.friends = await loadFriendIds(p.userId);
+  return p.friends;
+}
+
+async function announcePresence(p, online) {
+  const friends = await friendsOf(p);
+  for (const fid of friends) emitToUser(fid, "presence_update", { userId: p.userId, online });
+}
+
+function publicUser(p) {
+  return {
+    id: p.userId,
+    name: p.profile?.display_name || p.profile?.username || "A friend",
+    avatar: p.profile?.avatar_url || null,
+  };
+}
+
+// ── Reports ────────────────────────────────────────────────
+async function fileReport(reporter, reportedSid, reportedUserId, roomId, { reason, details, screenshotB64 }) {
+  const reporterKey = myIdentityKeys(reporter)[0];
+  const reportedKey = reportedUserId ? `u:${reportedUserId}` : `s:${reportedSid}`;
+  const pairKey = `${reporterKey}>${reportedKey}`;
+  const firstTime = !reportPairs.has(pairKey);
+  reportPairs.add(pairKey);
+
+  if (supabaseEnabled) {
+    await supabase.from("reports").insert({
+      reporter_id: reporter.userId || null,
+      reporter_key: reporterKey,
+      reporter_socket: reporter.id,
+      reported_socket: reportedSid,
+      reported_user_id: reportedUserId,
+      reason, details, room_id: roomId,
+      screenshot_b64: screenshotB64,
+    }).then(({ error }) => error && console.warn("[report] insert failed:", error.message));
+  }
+
+  // Only the first report per reporter→reported pair counts toward auto-ban
+  if (!firstTime || !reportedUserId || !supabaseEnabled) return;
+  const { data: profile } = await supabase.from("profiles").select("report_count, is_banned").eq("id", reportedUserId).single();
+  if (!profile || profile.is_banned) return;
+  const newCount = (profile.report_count || 0) + 1;
+  const shouldBan = newCount >= AUTO_BAN_THRESHOLD;
+  await supabase.from("profiles").update({
+    report_count: newCount,
+    ...(shouldBan ? { is_banned: true, ban_reason: `Auto-banned: reported by ${AUTO_BAN_THRESHOLD}+ different people` } : {}),
+  }).eq("id", reportedUserId);
+  if (shouldBan) {
+    await banFingerprints(reportedUserId, "auto-ban");
+    kickUser(reportedUserId, "You have been banned following multiple reports.");
   }
 }
 
-async function dequeue(socketId, mode, interests, country, myGender, college, language) {
-  try {
-    if (college) {
-      await redis.lrem(`college:${mode}:any`, 0, socketId);
-      return;
-    }
-    if (language) await redis.lrem(`waiting:${mode}:lang:${language}`, 0, socketId);
-    if (myGender && myGender !== "any") {
-      await redis.lrem(`waiting:${mode}:gender:${myGender}:any`, 0, socketId);
-    }
-    if (country && country !== "?") {
-      await redis.lrem(`waiting:${mode}:${country}:any`, 0, socketId);
-    }
-    await redis.lrem(`waiting:${mode}:any`, 0, socketId);
-    for (const interest of (interests || [])) {
-      await redis.lrem(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, 0, socketId);
-    }
-  } catch {
-    if (college) {
-      memQueueRemove(`college:${mode}:any`, socketId);
-      return;
-    }
-    if (language) memQueueRemove(`waiting:${mode}:lang:${language}`, socketId);
-    if (myGender && myGender !== "any") {
-      memQueueRemove(`waiting:${mode}:gender:${myGender}:any`, socketId);
-    }
-    memQueueRemove(`waiting:${mode}:any`, socketId);
-    for (const interest of (interests || [])) {
-      memQueueRemove(`waiting:${mode}:interest:${interest.toLowerCase().replace(/\s+/g, "_")}`, socketId);
-    }
-  }
+// ═══════════════════════════════════════════════════════════
+// Admin API (Supabase JWT with moderator/admin/superadmin role)
+// ═══════════════════════════════════════════════════════════
+async function adminLog(adminId, action, targetType, targetId, metadata) {
+  if (!supabaseEnabled) return;
+  await supabase.from("admin_logs").insert({ admin_id: adminId, action, target_type: targetType, target_id: targetId, metadata }).then(() => {}, () => {});
 }
 
-// ─── Spy mode queue ─────────────────────────────────────────
-// spy queue: waiting for a question asker to join two chatters
-const spyRooms = {}; // roomId → { a, b, question, spyId? }
-const sdRatings = {}; // roomId → { socketId: "like"|"pass" }
-
-async function findSpyMatch() {
-  // Find two text-mode chatters
-  try {
-    const a = await redis.lpop("waiting:spy:any");
-    const b = a ? await redis.lpop("waiting:spy:any") : null;
-    if (a && b && a !== b) return { a, b };
-    if (a) await redis.rpush("waiting:spy:any", a); // put back
-    return null;
-  } catch {
-    const a = memQueuePop("waiting:spy:any");
-    const b = a ? memQueuePop("waiting:spy:any") : null;
-    if (a && b && a !== b) return { a, b };
-    if (a) memQueuePush("waiting:spy:any", a);
-    return null;
+app.get("/api/admin/live", auth.requireStaff(), (req, res) => {
+  const waitingByMode = {};
+  for (const mode of [...MODES, "college"]) waitingByMode[mode] = 0;
+  for (const p of participants.values()) {
+    if (p.state === "waiting") {
+      const k = p.college ? "college" : p.mode;
+      waitingByMode[k] = (waitingByMode[k] || 0) + 1;
+    }
   }
+  waitingByMode.spy = spyChatters.size + spyWaiters.size;
+  const roomsByMode = {};
+  for (const r of rooms.values()) roomsByMode[r.mode] = (roomsByMode[r.mode] || 0) + 1;
+  const avgWaitByMode = {};
+  for (const mode of MODES) avgWaitByMode[mode] = avgWait(mode);
+  const now = Date.now();
+  res.json({
+    online: onlineCount(),
+    signedIn: userSockets.size,
+    connections: participants.size,
+    waitingByMode,
+    activeRooms: rooms.size,
+    roomsByMode,
+    matchesLastHour: stats.matches.length,
+    matchesLast5Min: stats.matches.filter((t) => now - t < 300_000).length,
+    avgWaitByMode,
+    bannedFingerprints: bannedFps.size,
+    uptimeSeconds: Math.round((now - startedAt) / 1000),
+    redis: redis.status === "ready" ? "ok" : "unavailable",
+  });
+});
+
+app.post("/api/admin/broadcast", auth.requireStaff(["admin", "superadmin"]), async (req, res) => {
+  const message = str(req.body?.message, 300);
+  const level = ["info", "warning", "success"].includes(req.body?.level) ? req.body.level : "info";
+  if (!message) return res.status(400).json({ error: "Message required (max 300 chars)" });
+  io.emit("announcement", { message, level, ts: Date.now() });
+  await adminLog(req.auth.userId, "broadcast", "all", null, { message, level });
+  res.json({ ok: true, delivered: participants.size });
+});
+
+app.post("/api/admin/kick", auth.requireStaff(), async (req, res) => {
+  const userId = str(req.body?.userId, 64);
+  if (!userId) return res.status(400).json({ error: "userId required" });
+  const reason = str(req.body?.reason, 200) || "You have been removed by a moderator.";
+  let fingerprints = 0;
+  if (req.body?.banFingerprint) fingerprints = await banFingerprints(userId, reason, req.auth.userId);
+  const kicked = kickUser(userId, reason);
+  await adminLog(req.auth.userId, "kick", "user", userId, { reason, kicked, fingerprints });
+  res.json({ ok: true, kicked, fingerprints });
+});
+
+// ═══════════════════════════════════════════════════════════
+// Socket.IO
+// ═══════════════════════════════════════════════════════════
+function clientIp(socket) {
+  return socket.handshake.headers["x-forwarded-for"]?.split(",")[0]?.trim() || socket.handshake.address;
 }
 
-// ─── Socket.io handlers ─────────────────────────────────────
-io.on("connection", async (socket) => {
-  let pairedWith = null;
-  let roomId = null;
-  let myInterests = [];
-  let myMode = "video";
-  let myCountry = null;
-  let myGender = "any"; // "any" | "male" | "female"
-  let wantGender = "any";
-  let myCollege = false;
-  let myLanguage = null; // ISO 639-1 code e.g. "en", "hi"
-  let myInviteToken = null;
-  let spyRole = null; // "spy" | "chatter_a" | "chatter_b" | null
+io.use(async (socket, next) => {
+  try {
+    await socketLimiter.consume(clientIp(socket));
+  } catch (e) {
+    if (rateLimiter.isLimited(e)) return next(new Error("Rate limit exceeded"));
+  }
+  // Optional auth: guests connect without a token
+  const a = await auth.authenticate(socket.handshake.auth?.token);
+  if (a?.profile?.is_banned) return next(new Error("banned"));
+  socket.data.auth = a;
+  next();
+});
 
-  updateOnlineCount(1);
+io.on("connection", (socket) => {
+  const a = socket.data.auth;
+  const ip = clientIp(socket);
 
-  // Resolve country from IP
-  const ip = socket.handshake.headers["x-forwarded-for"]?.split(",")[0]?.trim()
-    || socket.handshake.address;
-  const geoInfo = await getCountry(ip);
-  myCountry = geoInfo.country;
+  const p = {
+    id: socket.id, socket,
+    userId: a?.userId || null,
+    profile: a?.profile || null,
+    presenceOnly: socket.handshake.auth?.presence === true,
+    fpId: null, ip, geo: null, country: null,
+    mode: "video", interests: [], gender: "any", wantGender: "any",
+    college: false, language: null, sameCountry: false,
+    state: "idle", roomId: null, waitingSince: null,
+    avoid: new Set(), blocked: new Set(), friends: null,
+    pendingFriendFrom: null,
+  };
+  participants.set(socket.id, p);
+  markOnlineChanged();
+
+  if (p.userId) {
+    const first = !isOnline(p.userId);
+    if (!userSockets.has(p.userId)) userSockets.set(p.userId, new Set());
+    userSockets.get(p.userId).add(socket.id);
+    if (first) announcePresence(p, true).catch(() => {});
+  }
+  socket.emit("session", { userId: p.userId, badges: badgesFor(p) });
+
+  // Slow lookups run in the background; handlers are registered synchronously so
+  // an early find_match isn't dropped. Matchmaking handlers await this first.
+  const ready = (async () => {
+    if (p.userId) p.blocked = await loadBlocks(p.userId).catch(() => new Set());
+    p.geo = await getCountry(ip);
+    p.country = p.geo.country;
+  })().catch(() => {});
 
   // ── Fingerprint check ───────────────────────────────────
-  socket.on("fingerprint", async ({ fpId }) => {
-    if (!fpId) return;
-    try {
-      const banned = await redis.get(`fp_ban:${fpId}`);
-      if (banned) {
-        socket.emit("banned", { reason: "You are banned from MiloBolo." });
-        socket.disconnect(true);
-      }
-    } catch {}
+  socket.on("fingerprint", async ({ fpId } = {}) => {
+    if (!str(fpId, 128)) return;
+    p.fpId = fpId;
+    if (p.userId) {
+      if (!fpByUser.has(p.userId)) fpByUser.set(p.userId, new Set());
+      fpByUser.get(p.userId).add(fpId);
+    }
+    if (await isFpBanned(fpId)) {
+      socket.emit("banned", { reason: "You are banned from MiloBolo." });
+      socket.disconnect(true);
+    }
   });
 
   // ── Matchmaking ─────────────────────────────────────────
-  socket.on("find_match", async ({ mode = "video", userId = null, interests = [], gender = "any", wantGender: wg = "any", college = false, language = null, invite = null }) => {
-    myMode = mode;
-    myInterests = interests;
-    myGender = (gender === "male" || gender === "female") ? gender : "any";
-    wantGender = (wg === "male" || wg === "female") ? wg : "any";
-    myCollege = !!college;
-    myLanguage = typeof language === "string" && language.length === 2 ? language : null;
+  socket.on("find_match", async (opts = {}) => {
+    await ready;
+    if (!participants.has(socket.id)) return;
+    if (p.roomId) endRoom(p.roomId, socket.id);
+    removeFromWaiting(p);
 
-    myInviteToken = typeof invite === "string" && invite.length > 10 ? invite : null;
+    p.mode = MODES.includes(opts.mode) ? opts.mode : "video";
+    p.interests = Array.isArray(opts.interests)
+      ? opts.interests.filter((i) => typeof i === "string" && i.length <= 30).slice(0, 10)
+      : [];
+    p.gender = opts.gender === "male" || opts.gender === "female" ? opts.gender : "any";
+    p.wantGender = opts.wantGender === "male" || opts.wantGender === "female" ? opts.wantGender : "any";
+    p.language = typeof opts.language === "string" && opts.language.length === 2 ? opts.language : null;
+    p.sameCountry = !!opts.sameCountry;
+    p.college = !!opts.college;
 
-    // ── Invite room: bypass normal matchmaking ──────────────
-    if (myInviteToken) {
-      const inviteKey = `invite:${myInviteToken}`;
-      let inviteState = null;
-      try { inviteState = await redis.get(inviteKey); } catch { inviteState = memSocketMeta[`__invite_${myInviteToken}`] || null; }
-
-      if (inviteState && inviteState !== "pending") {
-        // inviteState holds the waiting socket ID — pair them
-        const waitingId = inviteState;
-        if (io.sockets.sockets.get(waitingId)) {
-          roomId = myInviteToken; // use token as roomId for easy correlation
-          pairedWith = waitingId;
-          try { await redis.del(inviteKey); } catch { delete memSocketMeta[`__invite_${myInviteToken}`]; }
-          try { await redis.set(`room:${roomId}`, JSON.stringify({ a: socket.id, b: waitingId }), "EX", 3600); } catch {}
-          socket.join(roomId);
-          io.sockets.sockets.get(waitingId)?.join(roomId);
-          io.to(socket.id).emit("match_found", { roomId, isInitiator: true, peer: waitingId, invited: true });
-          io.to(waitingId).emit("match_found", { roomId, isInitiator: false, peer: socket.id, invited: true });
-          return;
-        }
-      }
-      // First person — store socket ID and wait
-      try { await redis.set(inviteKey, socket.id, "EX", 600); } catch { memSocketMeta[`__invite_${myInviteToken}`] = socket.id; }
-      socket.emit("waiting", { invite: true });
+    if (p.college && !p.profile?.college_verified) {
+      socket.emit("college_required", { message: "Verify your college email to use College mode." });
       return;
     }
 
-    const meta = { userId, interests, mode, country: geoInfo, gender: myGender, college: myCollege, language: myLanguage };
-    memSocketMeta[socket.id] = meta;
-    try { await redis.set(`socket:${socket.id}`, JSON.stringify(meta), "EX", 600); } catch {}
-
-    const match = await findMatch(socket.id, mode, interests, myCountry, myGender, wantGender, myCollege, myLanguage);
-    if (match) {
-      const { waitingId, matchedInterest } = match;
-      roomId = uuidv4();
-      pairedWith = waitingId;
-
-      try { await redis.set(`room:${roomId}`, JSON.stringify({ a: socket.id, b: waitingId }), "EX", 3600); } catch {}
-
-      let peerData = memSocketMeta[waitingId] || {};
-      try {
-        const peerMeta = await redis.get(`socket:${waitingId}`);
-        if (peerMeta) peerData = JSON.parse(peerMeta);
-      } catch {}
-
-      socket.join(roomId);
-      io.sockets.sockets.get(waitingId)?.join(roomId);
-
-      io.to(socket.id).emit("match_found", {
-        roomId, isInitiator: true, peer: waitingId,
-        matchedInterest, peerInterests: peerData.interests || [],
-        peerCountry: peerData.country || null,
-        myCountry: geoInfo,
-        peerGender: peerData.gender || "any",
-      });
-      io.to(waitingId).emit("match_found", {
-        roomId, isInitiator: false, peer: socket.id,
-        matchedInterest, peerInterests: interests,
-        peerCountry: geoInfo,
-        myCountry: peerData.country || null,
-        peerGender: myGender,
-      });
-    } else {
-      await enqueue(socket.id, mode, interests, myCountry, myGender, myCollege, myLanguage);
-      socket.emit("waiting", { country: geoInfo });
+    // ── Invite room: bypass normal matchmaking ──────────────
+    const token = str(opts.invite, 64);
+    if (token && token.length > 10) {
+      const inv = invites.get(token) || { waiting: null, exp: Date.now() + 10 * 60_000 };
+      const other = inv.waiting && participants.get(inv.waiting);
+      if (other && other.id !== socket.id && other.state === "waiting") {
+        invites.delete(token);
+        createPairRoom(p, other, { invited: true, roomId: token });
+        return;
+      }
+      inv.waiting = socket.id;
+      invites.set(token, inv);
+      p.state = "waiting";
+      p.waitingSince = Date.now();
+      socket.emit("waiting", { invite: true, country: p.geo });
+      return;
     }
+
+    p.avoid = collectAvoid(p);
+    const mode = p.college ? `college:${p.mode}` : p.mode;
+    const match = mm.pickBest(p, waitingCandidates(mode));
+    if (match) {
+      createPairRoom(p, match.peer, { shared: match.shared });
+      return;
+    }
+    p.state = "waiting";
+    p.waitingSince = Date.now();
+    queueFor(mode).add(socket.id);
+    socket.emit("waiting", { country: p.geo });
   });
 
   // ── Spy / Question mode ─────────────────────────────────
-  // Role: "spy" — asks a question, watches two strangers discuss it
-  // Role: "chatter" — gets paired with another chatter, spy watches
-  socket.on("find_spy_match", async ({ role = "chatter", question = "" }) => {
-    myMode = "spy";
+  // Role "spy" asks a question and watches; two "chatter"s discuss it.
+  socket.on("find_spy_match", async ({ role = "chatter", question = "" } = {}) => {
+    await ready;
+    if (!participants.has(socket.id)) return;
+    if (p.roomId) endRoom(p.roomId, socket.id);
+    removeFromWaiting(p);
+    p.mode = "spy";
+    p.avoid = collectAvoid(p);
+
+    const takeChatterPair = () => {
+      const list = [...spyChatters].map((sid) => participants.get(sid)).filter((c) => c && io.sockets.sockets.has(c.id));
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const x = list[i], y = list[j];
+          if (!(x.avoid?.size && mm.identityKeys(y).some((k) => x.avoid.has(k))) &&
+              !(y.avoid?.size && mm.identityKeys(x).some((k) => y.avoid.has(k)))) return [x.id, y.id];
+        }
+      }
+      return null;
+    };
 
     if (role === "spy") {
-      spyRole = "spy";
-      // Spy waits for two chatters to be available
-      const pair = await findSpyMatch();
-      if (pair) {
-        const { a, b } = pair;
-        roomId = uuidv4();
-        spyRooms[roomId] = { a, b, spyId: socket.id, question };
+      const q = (typeof question === "string" ? question.trim() : "").slice(0, 200) || "Discuss anything!";
+      const pair = takeChatterPair();
+      if (pair) { createSpyRoom(pair[0], pair[1], socket.id, q); return; }
+      spyWaiters.set(socket.id, q);
+      p.state = "waiting";
+      socket.emit("waiting", { role: "spy" });
+      return;
+    }
 
-        socket.join(roomId);
-        io.sockets.sockets.get(a)?.join(roomId);
-        io.sockets.sockets.get(b)?.join(roomId);
-
-        const aData = memSocketMeta[a] || {};
-        const bData = memSocketMeta[b] || {};
-
-        io.to(socket.id).emit("spy_match_found", { roomId, question, role: "spy" });
-        io.to(a).emit("spy_match_found", { roomId, question, role: "chatter_a", peer: b, peerCountry: bData.country });
-        io.to(b).emit("spy_match_found", { roomId, question, role: "chatter_b", peer: a, peerCountry: aData.country });
-
-        memSocketMeta[a] = { ...aData, spyRoom: roomId };
-        memSocketMeta[b] = { ...bData, spyRoom: roomId };
-      } else {
-        // Store question and wait
-        memSocketMeta[socket.id] = { ...memSocketMeta[socket.id], pendingSpyQuestion: question };
-        socket.emit("waiting", { role: "spy" });
-        // Try again when chatters arrive
-        try { await redis.set(`spy_waiting:${socket.id}`, question, "EX", 300); } catch {}
-      }
+    spyChatters.add(socket.id);
+    p.state = "waiting";
+    const pair = takeChatterPair();
+    if (pair) {
+      const [spyId, q] = spyWaiters.entries().next().value || [null, "Discuss anything!"];
+      if (spyId) spyWaiters.delete(spyId);
+      createSpyRoom(pair[0], pair[1], spyId, q);
     } else {
-      spyRole = "chatter";
-      memSocketMeta[socket.id] = { ...memSocketMeta[socket.id], mode: "spy" };
-      // Check if a spy is waiting
-      let spySocketId = null;
-      let spyQuestion = "";
-      try {
-        const keys = await redis.keys("spy_waiting:*");
-        if (keys.length) {
-          spySocketId = keys[0].replace("spy_waiting:", "");
-          spyQuestion = await redis.get(keys[0]) || "";
-          await redis.del(keys[0]);
-        }
-      } catch {
-        // Check memSocketMeta for pending spy
-        for (const [sid, meta] of Object.entries(memSocketMeta)) {
-          if (meta.pendingSpyQuestion !== undefined) {
-            spySocketId = sid;
-            spyQuestion = meta.pendingSpyQuestion;
-            delete memSocketMeta[sid].pendingSpyQuestion;
-            break;
-          }
-        }
-      }
-
-      // Queue as chatter
-      try { await redis.rpush("waiting:spy:any", socket.id); await redis.expire("waiting:spy:any", 300); }
-      catch { memQueuePush("waiting:spy:any", socket.id); }
-
-      const pair = await findSpyMatch();
-      if (pair) {
-        const { a, b } = pair;
-        roomId = uuidv4();
-        const question = spyQuestion || "Discuss anything!";
-        spyRooms[roomId] = { a, b, spyId: spySocketId, question };
-
-        const aData = memSocketMeta[a] || {};
-        const bData = memSocketMeta[b] || {};
-
-        io.sockets.sockets.get(a)?.join(roomId);
-        io.sockets.sockets.get(b)?.join(roomId);
-
-        io.to(a).emit("spy_match_found", { roomId, question, role: "chatter_a", peer: b, peerCountry: bData.country });
-        io.to(b).emit("spy_match_found", { roomId, question, role: "chatter_b", peer: a, peerCountry: aData.country });
-
-        if (spySocketId && io.sockets.sockets.get(spySocketId)) {
-          io.sockets.sockets.get(spySocketId).join(roomId);
-          io.to(spySocketId).emit("spy_match_found", { roomId, question, role: "spy" });
-        }
-      } else {
-        socket.emit("waiting", { role: "chatter" });
-      }
+      socket.emit("waiting", { role: "chatter" });
     }
   });
 
-  socket.on("cancel_search", async () => {
-    await dequeue(socket.id, myMode, myInterests, myCountry, myGender, myCollege, myLanguage);
-    try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
-    try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
+  socket.on("cancel_search", () => {
+    removeFromWaiting(p);
+    for (const [t, inv] of invites) if (inv.waiting === socket.id) inv.waiting = null;
     socket.emit("search_cancelled");
   });
 
-  // ── WebRTC signaling ────────────────────────────────────
-  socket.on("signal", ({ to, signal }) => {
+  // ── WebRTC signaling: only to your current peer ─────────
+  socket.on("signal", ({ to, signal } = {}) => {
+    const room = p.roomId && rooms.get(p.roomId);
+    if (!room || !room.members.includes(to) || to === socket.id) return;
     io.to(to).emit("signal", { from: socket.id, signal });
   });
 
-  // ── E2E key exchange ────────────────────────────────────
-  socket.on("e2e_pubkey", ({ to, publicKey }) => {
+  socket.on("e2e_pubkey", ({ to, publicKey } = {}) => {
+    const room = p.roomId && rooms.get(p.roomId);
+    if (!room || !room.members.includes(to) || !str(publicKey, 1024)) return;
     io.to(to).emit("e2e_pubkey", { from: socket.id, publicKey });
   });
 
   // ── Message ─────────────────────────────────────────────
-  socket.on("message", async ({ roomId: rid, ciphertext, iv, plain, senderRole }) => {
+  socket.on("message", async ({ roomId: rid, id, ciphertext, iv, plain } = {}) => {
+    const room = roomOf(socket, rid);
+    if (!room) return;
+    if (room.kind === "spy" && room.spyId === socket.id) return; // spies only watch
     try { await msgLimiter.consume(socket.id); }
-    catch {
-      socket.emit("error", { message: "Slow down! Message rate limit exceeded." });
-      return;
+    catch (e) {
+      if (rateLimiter.isLimited(e)) { socket.emit("error", { message: "Slow down! Message rate limit exceeded." }); return; }
     }
-    if (!rid) return;
-    let cleanText = (plain || "").slice(0, 500);
-    if (!ciphertext && cleanText) {
+    const msgId = str(id, 64) || uuidv4();
+    const senderRole = room.roles?.[socket.id] || null;
+    let payload;
+    if (ciphertext) {
+      if (!str(ciphertext, 8000)) return;
+      payload = { from: socket.id, id: msgId, ciphertext, iv, ts: Date.now(), encrypted: true, senderRole };
+    } else {
+      let cleanText = (typeof plain === "string" ? plain : "").slice(0, 2000);
+      if (!cleanText.trim()) return;
       try { cleanText = profanityFilter.clean(cleanText); } catch {}
+      payload = { from: socket.id, id: msgId, text: cleanText, ts: Date.now(), encrypted: false, senderRole };
     }
-    const payload = ciphertext
-      ? { from: socket.id, ciphertext, iv, ts: Date.now(), encrypted: true, senderRole: senderRole || null }
-      : { from: socket.id, text: cleanText, ts: Date.now(), encrypted: false, senderRole: senderRole || null };
+    room.msgCount += 1;
     socket.to(rid).emit("message", payload);
   });
 
   // ── Typing ──────────────────────────────────────────────
-  socket.on("typing", ({ roomId: rid, typing, senderRole }) => {
-    if (rid) socket.to(rid).emit("typing", { from: socket.id, typing, senderRole: senderRole || null });
+  socket.on("typing", ({ roomId: rid, typing } = {}) => {
+    const room = roomOf(socket, rid);
+    if (room) socket.to(rid).emit("typing", { from: socket.id, typing: !!typing, senderRole: room.roles?.[socket.id] || null });
   });
 
-  // ── Reactions ───────────────────────────────────────────
-  socket.on("reaction", ({ roomId: rid, emoji }) => {
-    const allowed = ["👍","❤️","😂","😮","😢","🔥","👏","💯"];
-    if (rid && allowed.includes(emoji)) socket.to(rid).emit("reaction", { from: socket.id, emoji });
+  // ── Message-level actions: seen / unsend / react ────────
+  socket.on("msg_seen", ({ roomId: rid, ids } = {}) => {
+    if (!roomOf(socket, rid) || !Array.isArray(ids)) return;
+    const clean = ids.filter((x) => str(x, 64)).slice(0, 100);
+    if (clean.length) socket.to(rid).emit("msg_seen", { ids: clean });
+  });
+
+  socket.on("msg_unsend", ({ roomId: rid, id } = {}) => {
+    if (roomOf(socket, rid) && str(id, 64)) socket.to(rid).emit("msg_unsend", { id });
+  });
+
+  const MSG_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
+  socket.on("msg_react", ({ roomId: rid, id, emoji } = {}) => {
+    if (!roomOf(socket, rid) || !str(id, 64)) return;
+    if (emoji !== null && !MSG_REACTIONS.includes(emoji)) return;
+    socket.to(rid).emit("msg_react", { id, emoji });
+  });
+
+  // ── Reactions (floating) ────────────────────────────────
+  socket.on("reaction", ({ roomId: rid, emoji } = {}) => {
+    const allowed = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👏", "💯"];
+    if (roomOf(socket, rid) && allowed.includes(emoji)) socket.to(rid).emit("reaction", { from: socket.id, emoji });
   });
 
   // ── Image message ───────────────────────────────────────
-  socket.on("image_message", ({ roomId: rid, imageUrl, senderRole }) => {
-    if (!rid || typeof imageUrl !== "string") return;
+  socket.on("image_message", ({ roomId: rid, imageUrl, id } = {}) => {
+    const room = roomOf(socket, rid);
+    if (!room || typeof imageUrl !== "string" || imageUrl.length > 500) return;
     // Only allow R2 public URLs to prevent SSRF/phishing via socket relay
     const allowed = process.env.NEXT_PUBLIC_R2_PUBLIC_URL || "https://pub-";
     if (!imageUrl.startsWith(allowed) && !imageUrl.startsWith("https://pub-")) return;
-    socket.to(rid).emit("image_message", { from: socket.id, imageUrl, ts: Date.now(), senderRole: senderRole || null });
+    room.msgCount += 1;
+    socket.to(rid).emit("image_message", { from: socket.id, id: str(id, 64) || uuidv4(), imageUrl, ts: Date.now(), senderRole: room.roles?.[socket.id] || null });
+  });
+
+  // ── Voice note (≤ 60 s, ≤ 400 KB) ───────────────────────
+  socket.on("voice_note", async ({ roomId: rid, id, audio, mime, duration } = {}) => {
+    const room = roomOf(socket, rid);
+    if (!room || room.kind !== "pair") return;
+    if (!Buffer.isBuffer(audio) || audio.length === 0 || audio.length > 400_000) {
+      socket.emit("error", { message: "Voice note too large (max ~60 seconds)." });
+      return;
+    }
+    try { await msgLimiter.consume(socket.id); }
+    catch (e) { if (rateLimiter.isLimited(e)) return; }
+    const safeMime = /^audio\/(webm|ogg|mp4|mpeg)(;.*)?$/.test(mime || "") ? mime : "audio/webm";
+    const secs = Math.min(60, Math.max(0, Number(duration) || 0));
+    room.msgCount += 1;
+    socket.to(rid).emit("voice_note", { from: socket.id, id: str(id, 64) || uuidv4(), audio, mime: safeMime, duration: secs, ts: Date.now() });
+  });
+
+  // ── Tic-tac-toe ─────────────────────────────────────────
+  socket.on("game_action", ({ roomId: rid, action, cell } = {}) => {
+    const room = roomOf(socket, rid);
+    if (!room || room.kind !== "pair") return;
+    const other = otherMember(room, socket.id);
+    const emitState = () => io.to(rid).emit("game_state", games.publicState(room.game));
+
+    switch (action) {
+      case "invite":
+        if (room.game && room.game.status === "playing") return;
+        room.game = { ...games.newGame(socket.id), score: room.game?.score || {}, lastFirst: room.game?.lastFirst };
+        emitState();
+        break;
+      case "accept":
+        if (!room.game || room.game.status !== "invited" || room.game.inviter === socket.id) return;
+        games.start(room.game, room.game.inviter, socket.id);
+        emitState();
+        break;
+      case "decline":
+      case "quit":
+        if (!room.game) return;
+        room.game = null;
+        io.to(rid).emit("game_state", null);
+        if (action === "decline") io.to(other).emit("game_declined");
+        break;
+      case "move": {
+        if (!room.game) return;
+        const err = games.move(room.game, socket.id, cell);
+        if (err) socket.emit("game_error", { message: err });
+        else emitState();
+        break;
+      }
+      case "rematch":
+        if (!room.game || room.game.status !== "over") return;
+        games.start(room.game, socket.id, other);
+        emitState();
+        break;
+      default:
+    }
   });
 
   // ── Speed dating rating ─────────────────────────────────
-  socket.on("sd_rating", ({ roomId: rid, rating }) => {
-    if (!rid || (rating !== "like" && rating !== "pass")) return;
-    if (!sdRatings[rid]) sdRatings[rid] = {};
-    sdRatings[rid][socket.id] = rating;
-    // Check for mutual like
-    const votes = Object.values(sdRatings[rid]);
+  // Accepts { rating: "like"|"pass" } or { liked: boolean }; works after the room ended.
+  socket.on("sd_rating", ({ roomId: rid, rating, liked } = {}) => {
+    const value = rating === "like" || liked === true ? "like" : rating === "pass" || liked === false ? "pass" : null;
+    if (!value || typeof rid !== "string") return;
+    const live = rooms.get(rid);
+    const ended = endedRooms.get(rid);
+    const members = live ? live.members : ended ? Object.keys(ended.members) : [];
+    if (!members.includes(socket.id)) return;
+    const sd = live ? live.sd : ended.sd;
+    sd[socket.id] = value;
+    const votes = members.map((m) => sd[m]);
     if (votes.length === 2 && votes.every((v) => v === "like")) {
-      io.to(rid).emit("sd_mutual_like", { roomId: rid });
-      delete sdRatings[rid];
+      members.forEach((m) => io.to(m).emit("sd_mutual_like", { roomId: rid }));
     }
   });
 
-  // ── Friend request ──────────────────────────────────────
-  socket.on("friend_request", ({ to, fromUserId, fromName }) => {
-    io.to(to).emit("friend_request", { from: socket.id, fromUserId, fromName });
+  // ── Friend requests (server fills in identities) ────────
+  socket.on("friend_request", async () => {
+    const room = p.roomId && rooms.get(p.roomId);
+    if (!room || room.kind !== "pair") return;
+    const other = participants.get(otherMember(room, socket.id));
+    if (!p.userId) { socket.emit("error", { message: "Sign in to send connection requests." }); return; }
+    if (!other?.userId) { socket.emit("error", { message: "This stranger is a guest and can't receive requests." }); return; }
+    if (other.profile?.allow_friend_requests === false) { socket.emit("error", { message: "This stranger isn't accepting requests." }); return; }
+    if ((await friendsOf(p)).has(other.userId)) { socket.emit("error", { message: "You're already friends." }); return; }
+    other.pendingFriendFrom = socket.id;
+    io.to(other.id).emit("friend_request", { from: socket.id, fromName: publicUser(p).name });
+    socket.emit("friend_request_sent");
   });
 
-  socket.on("friend_response", ({ to, accepted, fromUserId, toUserId }) => {
-    io.to(to).emit("friend_response", { accepted, fromUserId, toUserId });
+  socket.on("friend_response", async ({ accepted } = {}) => {
+    const fromSid = p.pendingFriendFrom;
+    p.pendingFriendFrom = null;
+    const requester = fromSid && participants.get(fromSid);
+    if (!requester?.userId || !p.userId) return;
+    if (accepted && supabaseEnabled) {
+      // A row may already exist in either direction (e.g. a pending request from the Friends page)
+      const { data: existing } = await supabase.from("connections").select("id, status")
+        .or(`and(requester_id.eq.${requester.userId},receiver_id.eq.${p.userId}),and(requester_id.eq.${p.userId},receiver_id.eq.${requester.userId})`)
+        .maybeSingle();
+      if (existing?.status === "blocked") return;
+      const { error } = existing
+        ? await supabase.from("connections").update({ status: "accepted" }).eq("id", existing.id)
+        : await supabase.from("connections").insert({ requester_id: requester.userId, receiver_id: p.userId, status: "accepted" });
+      if (error) {
+        console.warn("[friends] upsert failed:", error.message);
+        socket.emit("error", { message: "Couldn't save the connection. Try again from the Friends page." });
+        return;
+      }
+      requester.friends?.add(p.userId);
+      p.friends?.add(requester.userId);
+    }
+    io.to(requester.id).emit("friend_response", { accepted: !!accepted });
+    if (accepted) socket.emit("friend_response", { accepted: true });
+  });
+
+  // ── Presence (friends online) ───────────────────────────
+  socket.on("presence_query", async (_, ack) => {
+    if (typeof ack !== "function") return;
+    if (!p.userId) return ack({ online: [] });
+    const friends = await friendsOf(p, true);
+    ack({ online: [...friends].filter(isOnline) });
+  });
+
+  // ── Direct messages between friends ─────────────────────
+  socket.on("dm_send", async ({ to, body, clientId } = {}, ack) => {
+    const reply = typeof ack === "function" ? ack : () => {};
+    if (!p.userId || !supabaseEnabled) return reply({ error: "Sign in required" });
+    const text = typeof body === "string" ? body.trim().slice(0, 1000) : "";
+    if (!str(to, 64) || !text) return reply({ error: "Invalid message" });
+    try { await dmLimiter.consume(p.userId); }
+    catch (e) { if (rateLimiter.isLimited(e)) return reply({ error: "You're sending messages too fast." }); }
+    let friends = await friendsOf(p);
+    if (!friends.has(to)) friends = await friendsOf(p, true);
+    if (!friends.has(to)) return reply({ error: "You can only message friends." });
+
+    const { data, error } = await supabase.from("direct_messages")
+      .insert({ sender_id: p.userId, receiver_id: to, body: text })
+      .select("id, sender_id, receiver_id, body, read_at, created_at").single();
+    if (error) return reply({ error: "Message failed to send." });
+    emitToUser(to, "dm", { message: data, from: publicUser(p) });
+    // Echo to the sender's other tabs
+    for (const sid of userSockets.get(p.userId) || []) if (sid !== socket.id) io.to(sid).emit("dm", { message: data, from: publicUser(p), clientId });
+    reply({ message: data, clientId });
+  });
+
+  socket.on("dm_read", async ({ from } = {}) => {
+    if (!p.userId || !str(from, 64) || !supabaseEnabled) return;
+    await supabase.from("direct_messages").update({ read_at: new Date().toISOString() })
+      .eq("sender_id", from).eq("receiver_id", p.userId).is("read_at", null);
+    await supabase.from("notifications").update({ read: true })
+      .eq("user_id", p.userId).eq("type", "dm").eq("actor_id", from).eq("read", false);
+    emitToUser(from, "dm_read", { by: p.userId, at: Date.now() });
+  });
+
+  socket.on("dm_typing", async ({ to, typing } = {}) => {
+    if (!p.userId || !str(to, 64)) return;
+    if ((await friendsOf(p)).has(to)) emitToUser(to, "dm_typing", { from: p.userId, typing: !!typing });
+  });
+
+  // ── Friend video/voice call via private invite room ─────
+  socket.on("friend_call", async ({ to, mode = "video" } = {}, ack) => {
+    const reply = typeof ack === "function" ? ack : () => {};
+    if (!p.userId || !str(to, 64)) return reply({ error: "Sign in required" });
+    if (!(await friendsOf(p, true)).has(to)) return reply({ error: "You can only call friends." });
+    if (!isOnline(to)) return reply({ error: "Your friend is offline." });
+    const callMode = mode === "voice" ? "voice" : "video";
+    const token = uuidv4();
+    invites.set(token, { waiting: null, exp: Date.now() + 2 * 60_000 });
+    emitToUser(to, "incoming_call", { token, mode: callMode, from: publicUser(p) });
+    reply({ token, mode: callMode });
+  });
+
+  socket.on("call_response", async ({ to, token, accepted } = {}) => {
+    if (!p.userId || !str(to, 64) || !str(token, 64)) return;
+    if (!(await friendsOf(p)).has(to)) return;
+    emitToUser(to, "call_response", { token, accepted: !!accepted, by: publicUser(p) });
+    if (!accepted) invites.delete(token);
   });
 
   // ── Screen share ────────────────────────────────────────
-  socket.on("screen_share_start", ({ roomId: rid }) => {
-    socket.to(rid).emit("peer_screen_share", { active: true });
+  socket.on("screen_share_start", ({ roomId: rid } = {}) => {
+    if (roomOf(socket, rid)) socket.to(rid).emit("peer_screen_share", { active: true });
   });
-  socket.on("screen_share_stop", ({ roomId: rid }) => {
-    socket.to(rid).emit("peer_screen_share", { active: false });
+  socket.on("screen_share_stop", ({ roomId: rid } = {}) => {
+    if (roomOf(socket, rid)) socket.to(rid).emit("peer_screen_share", { active: false });
   });
 
   // ── Next / skip ─────────────────────────────────────────
-  socket.on("next", async () => {
-    if (pairedWith) {
-      io.to(pairedWith).emit("peer_left");
-      socket.leave(roomId);
-      io.sockets.sockets.get(pairedWith)?.leave(roomId);
-      try { if (roomId) await redis.del(`room:${roomId}`); } catch {}
-      if (roomId) delete sdRatings[roomId];
-      pairedWith = null;
+  socket.on("next", () => {
+    if (p.roomId) endRoom(p.roomId, socket.id);
+    removeFromWaiting(p);
+  });
+
+  // ── Post-chat: rate / block the stranger ────────────────
+  function peerFromRecentRoom(rid) {
+    const live = rooms.get(rid);
+    if (live && live.members.includes(socket.id)) {
+      const sid = otherMember(live, socket.id);
+      return { sid, userId: participants.get(sid)?.userId || null };
     }
-    // Clean spy room
-    if (roomId && spyRooms[roomId]) {
-      const room = spyRooms[roomId];
-      io.to(room.a).emit("peer_left");
-      io.to(room.b).emit("peer_left");
-      if (room.spyId) io.to(room.spyId).emit("spy_ended");
-      delete spyRooms[roomId];
+    const ended = endedRooms.get(rid);
+    if (ended && socket.id in ended.members) {
+      const sid = Object.keys(ended.members).find((m) => m !== socket.id);
+      return sid ? { sid, userId: ended.members[sid] } : null;
     }
-    roomId = null;
-    spyRole = null;
+    return null;
+  }
+
+  socket.on("rate_peer", async ({ roomId: rid, score } = {}, ack) => {
+    const reply = typeof ack === "function" ? ack : () => {};
+    if (score !== 1 && score !== -1) return reply({ error: "Invalid rating" });
+    const peer = typeof rid === "string" && peerFromRecentRoom(rid);
+    if (!peer) return reply({ error: "Chat not found" });
+    if (!p.userId || !peer.userId || !supabaseEnabled) return reply({ ok: true, counted: false });
+    const { error } = await supabase.from("chat_ratings").insert({ rater_id: p.userId, rated_id: peer.userId, room_id: rid, score });
+    reply({ ok: true, counted: !error });
+  });
+
+  socket.on("block_peer", async ({ roomId: rid } = {}, ack) => {
+    const reply = typeof ack === "function" ? ack : () => {};
+    const peer = typeof rid === "string" && peerFromRecentRoom(rid);
+    if (!peer) return reply({ error: "Chat not found" });
+    const other = participants.get(peer.sid);
+    addAvoid(p, { userId: peer.userId, fpId: other?.fpId || null });
+    if (p.userId && peer.userId) {
+      p.blocked.add(peer.userId);
+      if (other) other.blocked.add(p.userId);
+      if (supabaseEnabled) {
+        await supabase.from("user_blocks").upsert({ blocker_id: p.userId, blocked_id: peer.userId }).then(() => {}, () => {});
+      }
+    }
+    if (p.roomId === rid) endRoom(rid, socket.id);
+    reply({ ok: true });
   });
 
   // ── Report ──────────────────────────────────────────────
-  socket.on("report", async ({ reportedId, reason, screenshotB64 }) => {
-    if (!reportedId || !reason) return;
-
-    const peerMeta = memSocketMeta[reportedId] || {};
-    const reportedUserId = peerMeta.userId || null;
-
-    await supabase.from("reports").insert({
-      reporter_socket: socket.id,
-      reported_socket: reportedId,
-      reported_user_id: reportedUserId,
-      reason, room_id: roomId,
-      screenshot_b64: screenshotB64 || null,
-    });
-
-    // Increment report_count and auto-ban at threshold (10+ reports)
-    if (reportedUserId) {
-      const { data: profile } = await supabase
-        .from("profiles").select("report_count, is_banned")
-        .eq("id", reportedUserId).single();
-      if (profile && !profile.is_banned) {
-        const newCount = (profile.report_count || 0) + 1;
-        const shouldBan = newCount >= 10;
-        await supabase.from("profiles").update({
-          report_count: newCount,
-          ...(shouldBan ? { is_banned: true, ban_reason: "Auto-banned: received 10+ reports" } : {}),
-        }).eq("id", reportedUserId);
-        if (shouldBan) {
-          io.to(reportedId).emit("banned", { reason: "You have been banned following multiple reports." });
-          io.sockets.sockets.get(reportedId)?.disconnect(true);
-        }
-      }
-    }
-
+  socket.on("report", async ({ roomId: rid, reason, details, screenshotB64 } = {}) => {
+    const targetRoom = (typeof rid === "string" && rid) || p.roomId;
+    const peer = targetRoom && peerFromRecentRoom(targetRoom);
+    if (!peer || !str(reason, 50)) return;
+    const shot = typeof screenshotB64 === "string" && screenshotB64.startsWith("data:image/") && screenshotB64.length < 300_000 ? screenshotB64 : null;
+    const other = participants.get(peer.sid);
+    // Remember this person so we don't match them again today
+    addAvoid(p, { userId: peer.userId, fpId: other?.fpId || null });
+    await fileReport(p, peer.sid, peer.userId, targetRoom, {
+      reason,
+      details: typeof details === "string" ? details.slice(0, 500) : null,
+      screenshotB64: shot,
+    }).catch((e) => console.warn("[report]", e.message));
     socket.emit("report_received");
   });
 
   // ── Disconnect ──────────────────────────────────────────
-  socket.on("disconnect", async () => {
-    updateOnlineCount(-1);
-    await dequeue(socket.id, myMode, myInterests, myCountry, myGender, myCollege, myLanguage);
-    try { await redis.lrem("waiting:spy:any", 0, socket.id); } catch { memQueueRemove("waiting:spy:any", socket.id); }
-    try { await redis.del(`spy_waiting:${socket.id}`); } catch {}
-    delete memSocketMeta[socket.id];
-    try { await redis.del(`socket:${socket.id}`); } catch {}
-
-    if (pairedWith) io.to(pairedWith).emit("peer_left");
-
-    // Clean spy room on disconnect
-    if (roomId && spyRooms[roomId]) {
-      const room = spyRooms[roomId];
-      if (spyRole === "spy") {
-        io.to(room.a).emit("spy_ended");
-        io.to(room.b).emit("spy_ended");
-      } else {
-        const other = room.a === socket.id ? room.b : room.a;
-        io.to(other).emit("peer_left");
-        if (room.spyId) io.to(room.spyId).emit("spy_ended");
+  socket.on("disconnect", () => {
+    removeFromWaiting(p);
+    if (p.roomId) endRoom(p.roomId, socket.id);
+    for (const inv of invites.values()) if (inv.waiting === socket.id) inv.waiting = null;
+    participants.delete(socket.id);
+    markOnlineChanged();
+    if (p.userId) {
+      const set = userSockets.get(p.userId);
+      set?.delete(socket.id);
+      if (set && set.size === 0) {
+        userSockets.delete(p.userId);
+        announcePresence(p, false).catch(() => {});
       }
-      delete spyRooms[roomId];
     }
-
-    try { if (roomId) await redis.del(`room:${roomId}`); } catch {}
-    if (roomId) delete sdRatings[roomId];
   });
 });
 

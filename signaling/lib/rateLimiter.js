@@ -1,15 +1,22 @@
 const { RateLimiterRedis, RateLimiterMemory } = require("rate-limiter-flexible");
 
+// Redis-backed limiter that transparently falls back to process memory when
+// Redis is unreachable (local dev, Redis restart). Without the insurance
+// limiter every consume() rejects with a connection error instead.
 function createLimiter(redis, opts) {
-  if (!redis || redis.status === "end" || redis.status === "close") {
-    return new RateLimiterMemory(opts);
-  }
-  try {
-    return new RateLimiterRedis({ storeClient: redis, ...opts });
-  } catch {
-    return new RateLimiterMemory(opts);
-  }
+  const insuranceLimiter = new RateLimiterMemory(opts);
+  if (!redis) return insuranceLimiter;
+  return new RateLimiterRedis({ storeClient: redis, ...opts, insuranceLimiter });
 }
+
+// consume() rejects with a RateLimiterRes when the limit is hit and with an
+// Error on infrastructure failure. Only the former should block the caller.
+function isLimited(e) {
+  return !!e && typeof e.msBeforeNext === "number";
+}
+
+exports.createLimiter = createLimiter;
+exports.isLimited = isLimited;
 
 exports.createHttpLimiter = (redis) =>
   createLimiter(redis, {
