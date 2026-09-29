@@ -3,10 +3,12 @@
 // but the double-match race it used to have).
 
 // Identity keys used for "never match me with this person again".
+// browserId is a random per-browser id — NOT the device fingerprint, which collides
+// for people on the same phone model/OS and would make one block hide many strangers.
 function identityKeys(p) {
   const keys = [];
   if (p.userId) keys.push(`u:${p.userId}`);
-  if (p.fpId) keys.push(`f:${p.fpId}`);
+  if (p.browserId) keys.push(`b:${p.browserId}`);
   return keys;
 }
 

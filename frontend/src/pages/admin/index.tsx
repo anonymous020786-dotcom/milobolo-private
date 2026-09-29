@@ -22,6 +22,11 @@ import Layout from "@/components/Layout";
 import SeoHead from "@/components/SeoHead";
 import { supabase, Profile, FeatureFlag } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
+import AdminLivePanel from "@/components/admin/AdminLivePanel";
+import { signalFetch } from "@/lib/socket";
+import SensorsIcon from "@mui/icons-material/Sensors";
+
+const STAFF = ["moderator", "admin", "superadmin"];
 
 interface StatsData {
   totalUsers: number;
@@ -53,7 +58,7 @@ export default function AdminPanel() {
   const [screenshotReport, setScreenshotReport] = useState<any | null>(null);
 
   useEffect(() => {
-    if (!authLoading && (!profile || !["admin", "superadmin"].includes(profile.role))) {
+    if (!authLoading && (!profile || !STAFF.includes(profile.role))) {
       router.push("/");
     }
   }, [profile, authLoading]);
@@ -93,7 +98,7 @@ export default function AdminPanel() {
       supabase.from("reports").select("id", { count: "exact", head: true }),
       supabase.from("reports").select("id", { count: "exact", head: true }).eq("status", "actioned"),
       supabase.from("reports").select("id", { count: "exact", head: true }).eq("status", "dismissed"),
-      supabase.from("feature_flags").select("id, enabled"),
+      supabase.from("feature_flags").select("key, enabled"),
     ]);
     setStats({
       totalUsers: usersRes.count || 0,
@@ -108,7 +113,7 @@ export default function AdminPanel() {
   };
 
   useEffect(() => {
-    if (profile && ["admin", "superadmin"].includes(profile.role)) {
+    if (profile && STAFF.includes(profile.role)) {
       loadFlags();
       loadStats();
     }
@@ -126,25 +131,44 @@ export default function AdminPanel() {
     showMsg("success", `${key} ${enabled ? "enabled" : "disabled"}`);
   };
 
+  const logAction = (action: string, targetType: string, targetId: string | null, metadata: Record<string, unknown> = {}) =>
+    supabase.from("admin_logs").insert({ admin_id: profile!.id, action, target_type: targetType, target_id: targetId, metadata });
+
+  // Ban = DB flag + disconnect their live sessions + ban their device fingerprints + audit log
+  const banById = async (userId: string, reason: string) => {
+    const { error } = await supabase.from("profiles").update({ is_banned: true, ban_reason: reason || "Banned by moderator" }).eq("id", userId);
+    if (error) { showMsg("error", error.message); return false; }
+    let live = "";
+    try {
+      const r = await signalFetch("/api/admin/kick", { method: "POST", body: JSON.stringify({ userId, reason: reason || "You have been banned.", banFingerprint: true }) });
+      live = ` · ${r.kicked} live session${r.kicked === 1 ? "" : "s"} closed, ${r.fingerprints} device${r.fingerprints === 1 ? "" : "s"} banned`;
+    } catch {
+      live = " · (signaling server unreachable — they'll be blocked on next connect)";
+    }
+    await logAction("ban", "user", userId, { reason });
+    setUsers((prev) => prev.map((u) => u.id === userId ? { ...u, is_banned: true } : u));
+    showMsg("success", `User banned${live}`);
+    return true;
+  };
+
   const banUser = async () => {
     if (!banDialog.user) return;
-    const { error } = await supabase.from("profiles").update({ is_banned: true, ban_reason: banReason }).eq("id", banDialog.user.id);
-    if (!error) {
-      setUsers((prev) => prev.map((u) => u.id === banDialog.user!.id ? { ...u, is_banned: true } : u));
-      showMsg("success", "User banned");
-    }
+    await banById(banDialog.user.id, banReason);
     setBanDialog({ open: false, user: null });
     setBanReason("");
   };
 
   const unbanUser = async (userId: string) => {
-    await supabase.from("profiles").update({ is_banned: false, ban_reason: null }).eq("id", userId);
+    const { error } = await supabase.from("profiles").update({ is_banned: false, ban_reason: null }).eq("id", userId);
+    if (error) return showMsg("error", error.message);
+    await logAction("unban", "user", userId);
     setUsers((prev) => prev.map((u) => u.id === userId ? { ...u, is_banned: false } : u));
     showMsg("success", "User unbanned");
   };
 
   const updateReportStatus = async (id: string, status: string) => {
     await supabase.from("reports").update({ status, reviewed_by: profile?.id }).eq("id", id);
+    await logAction(`report_${status}`, "report", id);
     setReports((prev) => prev.map((r) => r.id === id ? { ...r, status } : r));
   };
 
@@ -152,8 +176,8 @@ export default function AdminPanel() {
     setLoadingData(true);
     const { data } = await supabase
       .from("chat_history")
-      .select("id, user_id, mode, duration_seconds, message_count, matched_interest, created_at")
-      .order("created_at", { ascending: false })
+      .select("id, user_id, mode, duration_seconds, message_count, matched_interest, started_at")
+      .order("started_at", { ascending: false })
       .limit(300);
     if (data) setChatLogs(data);
     setLoadingData(false);
@@ -161,7 +185,9 @@ export default function AdminPanel() {
 
   const changeUserRole = async (userId: string, role: string) => {
     if (profile?.role !== "superadmin") return showMsg("error", "Only superadmin can change roles");
-    await supabase.from("profiles").update({ role }).eq("id", userId);
+    const { error } = await supabase.from("profiles").update({ role }).eq("id", userId);
+    if (error) return showMsg("error", error.message);
+    await logAction("change_role", "user", userId, { role });
     setUsers((prev) => prev.map((u) => u.id === userId ? { ...u, role: role as "user" | "moderator" | "admin" | "superadmin" } : u));
     showMsg("success", "Role updated");
   };
@@ -197,7 +223,7 @@ export default function AdminPanel() {
   }, [reports, reportSearch]);
 
   if (authLoading) return null;
-  if (!profile || !["admin", "superadmin"].includes(profile.role)) return null;
+  if (!profile || !STAFF.includes(profile.role)) return null;
 
   return (
     <Layout title="Admin Panel">
@@ -245,7 +271,10 @@ export default function AdminPanel() {
           <Tab icon={<FlagIcon />} label="Reports" iconPosition="start" />
           <Tab icon={<BarChartIcon />} label="Stats" iconPosition="start" />
           <Tab icon={<ChatBubbleIcon />} label="Chat Logs" iconPosition="start" />
+          <Tab icon={<SensorsIcon />} label="Live" iconPosition="start" />
         </Tabs>
+
+        {tab === 5 && <AdminLivePanel canBroadcast={["admin", "superadmin"].includes(profile.role)} adminId={profile.id} />}
 
         {/* Feature Flags */}
         {tab === 0 && (
@@ -382,7 +411,11 @@ export default function AdminPanel() {
                     <TableBody>
                       {filteredReports.map((r) => (
                         <TableRow key={r.id} hover>
-                          <TableCell sx={{ maxWidth: 200 }}>{r.reason}</TableCell>
+                          <TableCell sx={{ maxWidth: 260 }}>
+                            {r.reason}
+                            {r.details && <Typography variant="caption" color="text.secondary" display="block" sx={{ whiteSpace: "pre-wrap" }}>{r.details}</Typography>}
+                            {r.reporter_id && <Typography variant="caption" color="text.disabled" display="block">by member {String(r.reporter_id).slice(0, 8)}</Typography>}
+                          </TableCell>
                           <TableCell sx={{ fontSize: 11, fontFamily: "monospace" }}>{r.room_id?.slice(0, 10) || "—"}</TableCell>
                           <TableCell>
                             {r.screenshot_b64 ? (
@@ -408,11 +441,7 @@ export default function AdminPanel() {
                                 <Button size="small" color="error" variant="contained"
                                   disabled={r.status !== "pending"}
                                   onClick={async () => {
-                                    await supabase.from("profiles").update({
-                                      is_banned: true, ban_reason: `Banned via report: ${r.reason}`,
-                                    }).eq("id", r.reported_user_id);
-                                    updateReportStatus(r.id, "actioned");
-                                    showMsg("success", "User banned");
+                                    if (await banById(r.reported_user_id, `Banned via report: ${r.reason}`)) updateReportStatus(r.id, "actioned");
                                   }}>
                                   Ban
                                 </Button>
@@ -590,7 +619,7 @@ export default function AdminPanel() {
                               {r.user_id ? r.user_id.slice(0, 10) + "…" : <Typography variant="caption" color="text.disabled">anon</Typography>}
                             </TableCell>
                             <TableCell sx={{ fontSize: 12 }}>
-                              {new Date(r.created_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" })}
+                              {new Date(r.started_at).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "2-digit" })}
                             </TableCell>
                           </TableRow>
                         );

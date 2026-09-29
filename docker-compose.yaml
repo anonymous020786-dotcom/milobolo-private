@@ -11,8 +11,9 @@ services:
     restart: "no"
     volumes:
       - zync_vhost:/etc/nginx/vhost.d
+    # Signaling REST paths are listed explicitly; everything else under /api/ stays with Next.js.
     command: >-
-      sh -c "printf 'location /socket.io/ {\n  proxy_pass http://milobolo-signaling-1:4000;\n  proxy_http_version 1.1;\n  proxy_set_header Upgrade $$http_upgrade;\n  proxy_set_header Connection upgrade;\n  proxy_set_header Host $$host;\n  proxy_read_timeout 86400;\n  proxy_cache_bypass $$http_upgrade;\n}\nlocation /api/check-nsfw {\n  proxy_pass http://milobolo-signaling-1:4000;\n  proxy_http_version 1.1;\n  proxy_set_header Host $$host;\n}\n' > /etc/nginx/vhost.d/chat.videodownloaders.cloud_location && echo done"
+      sh -c "printf 'location /socket.io/ {\n  proxy_pass http://milobolo-signaling-1:4000;\n  proxy_http_version 1.1;\n  proxy_set_header Upgrade $$http_upgrade;\n  proxy_set_header Connection upgrade;\n  proxy_set_header Host $$host;\n  proxy_set_header X-Real-IP $$remote_addr;\n  proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;\n  proxy_read_timeout 86400;\n  proxy_cache_bypass $$http_upgrade;\n}\nlocation ~ ^/api/(send-otp|verify-otp|online-count|contact|check-nsfw|college/|admin/) {\n  proxy_pass http://milobolo-signaling-1:4000;\n  proxy_http_version 1.1;\n  proxy_set_header Host $$host;\n  proxy_set_header X-Real-IP $$remote_addr;\n  proxy_set_header X-Forwarded-For $$proxy_add_x_forwarded_for;\n}\nlocation = /health {\n  proxy_pass http://milobolo-signaling-1:4000;\n  proxy_set_header Host $$host;\n}\n' > /etc/nginx/vhost.d/chat.videodownloaders.cloud_location && echo done"
 
   frontend:
     image: ghcr.io/zestcommerce841428-png/milobolo-frontend:latest
@@ -24,6 +25,11 @@ services:
       - SIGNALING_INTERNAL_URL=http://signaling:4000
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
       - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - R2_ACCOUNT_ID=${R2_ACCOUNT_ID}
+      - R2_ACCESS_KEY_ID=${R2_ACCESS_KEY_ID}
+      - R2_SECRET_ACCESS_KEY=${R2_SECRET_ACCESS_KEY}
+      - R2_BUCKET_NAME=${R2_BUCKET_NAME}
+      - NEXT_PUBLIC_R2_PUBLIC_URL=${NEXT_PUBLIC_R2_PUBLIC_URL}
       - VIRTUAL_HOST=chat.videodownloaders.cloud
       - VIRTUAL_PORT=3000
       - LETSENCRYPT_HOST=chat.videodownloaders.cloud
@@ -47,7 +53,11 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD}
       - SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
       - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
-      - RECAPTCHA_SECRET=
+      - RECAPTCHA_SECRET_KEY=${RECAPTCHA_SECRET_KEY}
+      - NEXT_PUBLIC_RECAPTCHA_SITE_KEY=${NEXT_PUBLIC_RECAPTCHA_SITE_KEY}
+      - NEXT_PUBLIC_R2_PUBLIC_URL=${NEXT_PUBLIC_R2_PUBLIC_URL}
+      - CONTACT_EMAIL=${CONTACT_EMAIL:-}
+      - OTP_PEPPER=${OTP_PEPPER:-}
       - JWT_SECRET=${JWT_SECRET}
       - SMTP_HOST=smtp.hostinger.com
       - SMTP_PORT=587

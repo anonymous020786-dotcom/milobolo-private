@@ -13,40 +13,10 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import Layout from "@/components/Layout";
 import SeoHead from "@/components/SeoHead";
 import { useAuth } from "@/context/AuthContext";
-import { supabase } from "@/lib/supabase";
-
-const STORAGE_KEY = "mb_settings";
-
-interface Settings {
-  defaultMode: "video" | "text";
-  defaultLanguage: string;
-  showTypingIndicator: boolean;
-  playMessageSound: boolean;
-  pushEnabled: boolean;
-  allowFriendRequests: boolean;
-  saveHistory: boolean;
-  compactChat: boolean;
-}
-
-const DEFAULTS: Settings = {
-  defaultMode: "video",
-  defaultLanguage: "",
-  showTypingIndicator: true,
-  playMessageSound: false,
-  pushEnabled: false,
-  allowFriendRequests: true,
-  saveHistory: true,
-  compactChat: false,
-};
-
-function load(): Settings {
-  if (typeof window === "undefined") return DEFAULTS;
-  try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
-  } catch {
-    return DEFAULTS;
-  }
-}
+import {
+  AppSettings as Settings, SETTINGS_DEFAULTS as DEFAULTS,
+  SETTINGS_STORAGE_KEY as STORAGE_KEY, loadSettings as load,
+} from "@/hooks/useSettings";
 
 const LANGUAGES = [
   { code: "", label: "Any language" },
@@ -220,6 +190,18 @@ export default function SettingsPage() {
                 value={settings.compactChat}
                 onChange={(v) => set("compactChat", v)}
               />
+              <Toggle
+                label="Auto-next"
+                sub="Automatically find a new stranger 3 seconds after one leaves"
+                value={settings.autoNext}
+                onChange={(v) => set("autoNext", v)}
+              />
+              <Toggle
+                label="Same country only"
+                sub="Only match with people in your country (may take longer)"
+                value={settings.sameCountryOnly}
+                onChange={(v) => set("sameCountryOnly", v)}
+              />
             </SectionCard>
 
             {/* Privacy */}
@@ -235,6 +217,18 @@ export default function SettingsPage() {
                 sub="Store session summaries to your account (no messages are stored)"
                 value={settings.saveHistory}
                 onChange={(v) => set("saveHistory", v)}
+              />
+              <Toggle
+                label="Hide links from strangers"
+                sub="Links are collapsed until you click to reveal them (protects against phishing)"
+                value={settings.hideStrangerLinks}
+                onChange={(v) => set("hideStrangerLinks", v)}
+              />
+              <Toggle
+                label="Send read receipts"
+                sub="Let strangers see when you've read their messages"
+                value={settings.sendReadReceipts}
+                onChange={(v) => set("sendReadReceipts", v)}
               />
             </SectionCard>
           </Grid>

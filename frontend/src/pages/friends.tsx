@@ -16,18 +16,15 @@ import PeopleIcon from "@mui/icons-material/People";
 import SearchIcon from "@mui/icons-material/Search";
 import HourglassTopIcon from "@mui/icons-material/HourglassTop";
 import SendIcon from "@mui/icons-material/Send";
-import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/context/AuthContext";
-
-interface Connection {
-  id: string;
-  user_id: string;
-  friend_id: string;
-  status: "pending" | "accepted" | "blocked";
-  created_at: string;
-  display_name?: string;
-  avatar_url?: string;
-}
+import { useRealtime } from "@/context/RealtimeContext";
+import { Connection, loadConnections as fetchConnections, requestByUsername, blockUser } from "@/lib/friends";
+import { supabase } from "@/lib/supabase";
+import ChatIcon from "@mui/icons-material/Chat";
+import VideocamIcon from "@mui/icons-material/Videocam";
+import PersonAddIcon from "@mui/icons-material/PersonAdd";
+import Alert from "@mui/material/Alert";
+import Badge from "@mui/material/Badge";
 
 export default function FriendsPage() {
   const { user, loading: authLoading } = useAuth();
@@ -40,6 +37,9 @@ export default function FriendsPage() {
   const [search, setSearch] = useState("");
   const [removeTarget, setRemoveTarget] = useState<Connection | null>(null);
   const [blockTarget, setBlockTarget] = useState<Connection | null>(null);
+  const [addHandle, setAddHandle] = useState("");
+  const [addMsg, setAddMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const { onlineFriends, callFriend } = useRealtime();
 
   useEffect(() => {
     if (!authLoading && !user) router.push("/auth/login?next=/friends");
@@ -52,34 +52,23 @@ export default function FriendsPage() {
 
   const loadConnections = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from("connections")
-      .select(`
-        id, user_id, friend_id, status, created_at,
-        profile:profiles!connections_friend_id_fkey(display_name, avatar_url),
-        sender:profiles!connections_user_id_fkey(display_name, avatar_url)
-      `)
-      .or(`user_id.eq.${user!.id},friend_id.eq.${user!.id}`)
-      .order("created_at", { ascending: false });
-
-    if (data) {
-      const mapped = data.map((c: any) => {
-        const isReceiver = c.friend_id === user!.id;
-        return {
-          ...c,
-          display_name: isReceiver
-            ? (c.sender?.display_name || "Anonymous")
-            : (c.profile?.display_name || "Anonymous"),
-          avatar_url: isReceiver
-            ? (c.sender?.avatar_url || null)
-            : (c.profile?.avatar_url || null),
-        };
-      });
-      setConnections(mapped.filter((c: any) => c.status === "accepted"));
-      setPending(mapped.filter((c: any) => c.status === "pending" && c.friend_id === user!.id));
-      setSent(mapped.filter((c: any) => c.status === "pending" && c.user_id === user!.id));
-    }
+    const all = await fetchConnections(user!.id);
+    setConnections(all.filter((c) => c.status === "accepted"));
+    setPending(all.filter((c) => c.status === "pending" && c.incoming));
+    setSent(all.filter((c) => c.status === "pending" && !c.incoming));
     setLoading(false);
+  };
+
+  const addByUsername = async () => {
+    if (!addHandle.trim()) return;
+    const err = await requestByUsername(user!.id, addHandle);
+    setAddMsg(err ? { ok: false, text: err } : { ok: true, text: `Request sent to @${addHandle.replace(/^@/, "")}.` });
+    if (!err) { setAddHandle(""); loadConnections(); }
+  };
+
+  const startCall = async (c: Connection) => {
+    try { await callFriend(c.other_id, "video"); }
+    catch (e) { setAddMsg({ ok: false, text: e instanceof Error ? e.message : "Call failed" }); }
   };
 
   const acceptRequest = async (id: string) => {
@@ -106,16 +95,19 @@ export default function FriendsPage() {
 
   const confirmBlock = async () => {
     if (!blockTarget) return;
-    await supabase.from("connections").update({ status: "blocked" }).eq("id", blockTarget.id);
+    await blockUser(user!.id, blockTarget);
     setBlockTarget(null);
     loadConnections();
   };
 
   const filteredConnections = useMemo(() => {
     const q = search.toLowerCase();
-    if (!q) return connections;
-    return connections.filter((c) => (c.display_name || "").toLowerCase().includes(q));
-  }, [connections, search]);
+    const list = q
+      ? connections.filter((c) => c.display_name.toLowerCase().includes(q) || (c.username || "").includes(q))
+      : connections;
+    // Online friends first
+    return [...list].sort((a, b) => Number(onlineFriends.has(b.other_id)) - Number(onlineFriends.has(a.other_id)));
+  }, [connections, search, onlineFriends]);
 
   if (authLoading || !user) return null;
 
@@ -134,6 +126,19 @@ export default function FriendsPage() {
             <Chip label={`${pending.length} new`} color="warning" size="small" />
           )}
         </Stack>
+
+        {/* Add by username */}
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} mb={addMsg ? 1 : 3}>
+          <TextField size="small" fullWidth placeholder="Add a friend by username, e.g. @priya_21"
+            value={addHandle} onChange={(e) => { setAddHandle(e.target.value); setAddMsg(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") addByUsername(); }}
+            sx={{ "& .MuiOutlinedInput-root": { borderRadius: 2 } }}
+            InputProps={{ startAdornment: <InputAdornment position="start"><PersonAddIcon fontSize="small" /></InputAdornment> }} />
+          <Button variant="contained" onClick={addByUsername} disabled={!addHandle.trim()} sx={{ borderRadius: 2, flexShrink: 0 }}>
+            Send request
+          </Button>
+        </Stack>
+        {addMsg && <Alert severity={addMsg.ok ? "success" : "warning"} sx={{ mb: 3 }} onClose={() => setAddMsg(null)}>{addMsg.text}</Alert>}
 
         {/* Tabs */}
         <Tabs value={tab} onChange={(_, v) => { setTab(v); setSearch(""); }} sx={{ mb: 3 }} variant="scrollable" scrollButtons="auto">
@@ -183,7 +188,7 @@ export default function FriendsPage() {
                     {!search && (
                       <>
                         <Typography variant="body2" color="text.disabled" mb={3}>
-                          Click &ldquo;Add Friend&rdquo; during a chat to connect with someone.
+                          Click the person-add icon during a chat, or add someone by username above.
                         </Typography>
                         <Button variant="contained" sx={{ borderRadius: 2 }} onClick={() => router.push("/chat?mode=text")}>
                           Start Chatting
@@ -197,16 +202,34 @@ export default function FriendsPage() {
                       <Card key={c.id} sx={{ borderRadius: 3, transition: "box-shadow 0.2s", "&:hover": { boxShadow: "0 4px 20px rgba(108,99,255,0.12)" } }}>
                         <CardContent sx={{ py: 2 }}>
                           <Stack direction="row" alignItems="center" spacing={2}>
-                            <Avatar src={c.avatar_url || undefined}
-                              sx={{ width: 48, height: 48, bgcolor: "primary.main" }}>
-                              {c.display_name?.[0]?.toUpperCase()}
-                            </Avatar>
+                            <Badge overlap="circular" variant="dot" color="success" invisible={!onlineFriends.has(c.other_id)}
+                              anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
+                              sx={{ "& .MuiBadge-dot": { width: 12, height: 12, borderRadius: "50%", border: "2px solid", borderColor: "background.paper" } }}>
+                              <Avatar src={c.avatar_url || undefined}
+                                sx={{ width: 48, height: 48, bgcolor: "primary.main", cursor: c.username ? "pointer" : "default" }}
+                                onClick={() => c.username && router.push(`/u/${c.username}`)}>
+                                {c.display_name?.[0]?.toUpperCase()}
+                              </Avatar>
+                            </Badge>
                             <Box flex={1} minWidth={0}>
                               <Typography fontWeight={700} noWrap>{c.display_name}</Typography>
                               <Typography variant="caption" color="text.disabled">
-                                Connected {new Date(c.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                                {c.username ? `@${c.username} · ` : ""}
+                                {onlineFriends.has(c.other_id) ? "Online now" : `Connected ${new Date(c.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}`}
                               </Typography>
                             </Box>
+                            <Tooltip title="Message">
+                              <IconButton size="small" color="primary" onClick={() => router.push(`/messages?with=${c.other_id}`)}>
+                                <ChatIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title={onlineFriends.has(c.other_id) ? "Video call" : "Offline"}>
+                              <span>
+                                <IconButton size="small" color="success" disabled={!onlineFriends.has(c.other_id)} onClick={() => startCall(c)}>
+                                  <VideocamIcon fontSize="small" />
+                                </IconButton>
+                              </span>
+                            </Tooltip>
                             <Tooltip title="Block user">
                               <IconButton size="small" color="warning" onClick={() => setBlockTarget(c)}>
                                 <BlockIcon fontSize="small" />

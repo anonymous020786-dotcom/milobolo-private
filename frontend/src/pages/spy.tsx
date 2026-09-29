@@ -8,7 +8,8 @@ import SendIcon from "@mui/icons-material/Send";
 import SkipNextIcon from "@mui/icons-material/SkipNext";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import ChatIcon from "@mui/icons-material/Chat";
-import { io, Socket } from "socket.io-client";
+import { Socket } from "socket.io-client";
+import { createSignalSocket } from "@/lib/socket";
 import Layout from "@/components/Layout";
 import SeoHead from "@/components/SeoHead";
 
@@ -91,7 +92,7 @@ export default function SpyPage() {
   }, [messages]);
 
   useEffect(() => {
-    const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL || "", { transports: ["websocket"] });
+    const socket = createSignalSocket();
     socketRef.current = socket;
 
     socket.on("waiting", () => setSpyState("waiting"));

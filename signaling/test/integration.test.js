@@ -11,8 +11,10 @@ const URL = `http://localhost:${PORT}`;
 let proc;
 const clients = [];
 
+let nextBrowser = 0;
 function connect() {
-  const s = io(URL, { transports: ["websocket"], forceNew: true, reconnection: false });
+  const browserId = `test-browser-${process.pid}-${nextBrowser++}-xxxxxxxx`;
+  const s = io(URL, { transports: ["websocket"], forceNew: true, reconnection: false, auth: { browserId } });
   clients.push(s);
   return s;
 }
@@ -176,9 +178,6 @@ test("speed dating mutual like works after the call ended", async () => {
 
 test("blocking a stranger prevents rematching them", async () => {
   const { a, b, ma } = await pair("text");
-  a.emit("fingerprint", { fpId: "fp-a" });
-  b.emit("fingerprint", { fpId: "fp-b" });
-  await new Promise((r) => setTimeout(r, 100));
   const ack = await new Promise((resolve) => a.emit("block_peer", { roomId: ma.roomId }, resolve));
   assert.deepStrictEqual(ack, { ok: true });
 

@@ -21,6 +21,7 @@ import QrCode2Icon from "@mui/icons-material/QrCode2";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import PersonIcon from "@mui/icons-material/Person";
 import Layout from "@/components/Layout";
+import AchievementsCard from "@/components/AchievementsCard";
 import SeoHead from "@/components/SeoHead";
 import OtpInput from "@/components/auth/OtpInput";
 import { useAuth } from "@/context/AuthContext";
@@ -267,8 +268,17 @@ export default function Profile() {
 
   const [tab, setTab] = useState(0);
   const [displayName, setDisplayName] = useState(profile?.display_name || "");
+  const [username, setUsername] = useState("");
+  const [exporting, setExporting] = useState(false);
   const [bio, setBio] = useState(profile?.bio || "");
   const [saving, setSaving] = useState(false);
+  // Keep the form in sync once the profile arrives (it's often null on first render)
+  useEffect(() => {
+    if (!profile) return;
+    setDisplayName(profile.display_name || "");
+    setUsername(profile.username || "");
+    setBio(profile.bio || "");
+  }, [profile]);
   const [msg, setMsg] = useState({ type: "", text: "" });
 
   // Password change
@@ -323,10 +333,36 @@ export default function Profile() {
 
   const handleSaveProfile = async () => {
     setSaving(true);
-    const { error } = await supabase.from("profiles").update({ display_name: displayName, bio }).eq("id", user!.id);
+    const handle = username.trim().replace(/^@/, "").toLowerCase();
+    if (handle && !/^[a-z0-9_]{3,20}$/.test(handle)) {
+      setSaving(false);
+      return showMsg("error", "Username must be 3–20 characters: lowercase letters, numbers or underscores.");
+    }
+    const { error } = await supabase.from("profiles")
+      .update({ display_name: displayName, bio, username: handle || null }).eq("id", user!.id);
     setSaving(false);
-    if (error) showMsg("error", error.message);
+    if (error) showMsg("error", /duplicate|unique/i.test(error.message) ? `@${handle} is already taken.` : error.message);
     else { await refreshProfile(); showMsg("success", "Profile updated!"); }
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/export-data", { headers: session ? { Authorization: `Bearer ${session.access_token}` } : {} });
+      if (!res.ok) throw new Error();
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `milobolo-data-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      showMsg("error", "Export failed. Please try again.");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -430,6 +466,10 @@ export default function Profile() {
                   <Stack direction="row" spacing={0.5} justifyContent="center" mt={1} flexWrap="wrap">
                     <Chip label={profile?.role || "user"} size="small" color="primary" />
                     {profile?.is_verified && <Chip label="Verified" size="small" color="success" />}
+                    {profile?.college_verified && <Chip label="🎓 Student" size="small" color="warning" variant="outlined" />}
+                    <Tooltip title="Karma from post-chat ratings">
+                      <Chip label={`⭐ ${profile?.karma ?? 0} karma`} size="small" variant="outlined" />
+                    </Tooltip>
                     {enrolledTotp.length > 0 && (
                       <Chip icon={<ShieldIcon />} label="2FA On" size="small" color="success" variant="outlined"
                         sx={{ "& .MuiChip-icon": { fontSize: 14 } }} />
@@ -438,6 +478,15 @@ export default function Profile() {
                   <Typography variant="caption" display="block" color="text.secondary" mt={2}>
                     {profile?.total_chats || 0} chats • Joined {new Date(profile?.created_at || "").toLocaleDateString("en-IN")}
                   </Typography>
+                  {profile?.username && (
+                    <Button size="small" sx={{ mt: 1 }} onClick={() => router.push(`/u/${profile.username}`)}>
+                      View public profile
+                    </Button>
+                  )}
+                  <Button size="small" variant="text" color="inherit" disabled={exporting} onClick={handleExport}
+                    sx={{ mt: 0.5, display: "block", mx: "auto", fontSize: 12, color: "text.secondary" }}>
+                    {exporting ? "Preparing…" : "Download my data (JSON)"}
+                  </Button>
                 </CardContent>
               </Card>
               <ProfileCompletion profile={profile} hasAvatar={hasAvatar} />
@@ -446,6 +495,11 @@ export default function Profile() {
               <Card>
                 <CardContent sx={{ p: 4 }}>
                   <Typography variant="h6" fontWeight={600} mb={3}>Edit Profile</Typography>
+                  <TextField fullWidth label="Username" value={username}
+                    onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_@]/g, "").slice(0, 21))}
+                    sx={{ mb: 3 }}
+                    helperText="Friends can add you by @username. 3–20 letters, numbers or underscores."
+                    InputProps={{ sx: { borderRadius: 2 }, startAdornment: <Typography color="text.disabled" mr={0.5}>@</Typography> }} />
                   <TextField fullWidth label="Display Name" value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)} sx={{ mb: 3 }}
                     inputProps={{ maxLength: 50 }}
@@ -461,6 +515,7 @@ export default function Profile() {
                 </CardContent>
               </Card>
               <ChatStatsCard userId={user.id} />
+              <AchievementsCard userId={user.id} karma={profile?.karma} collegeVerified={profile?.college_verified} totalChats={profile?.total_chats} />
             </Grid>
           </Grid>
         )}

@@ -809,8 +809,13 @@ app.post("/api/admin/kick", auth.requireStaff(), async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 // Socket.IO
 // ═══════════════════════════════════════════════════════════
+// X-Real-IP is set by our nginx from the TCP peer; the first X-Forwarded-For entry is
+// client-controlled, so only the last hop (appended by nginx) is trusted as a fallback.
 function clientIp(socket) {
-  return socket.handshake.headers["x-forwarded-for"]?.split(",")[0]?.trim() || socket.handshake.address;
+  const h = socket.handshake.headers;
+  if (typeof h["x-real-ip"] === "string" && h["x-real-ip"]) return h["x-real-ip"].trim();
+  const xff = typeof h["x-forwarded-for"] === "string" ? h["x-forwarded-for"].split(",") : [];
+  return xff.length ? xff[xff.length - 1].trim() : socket.handshake.address;
 }
 
 io.use(async (socket, next) => {
@@ -836,6 +841,7 @@ io.on("connection", (socket) => {
     profile: a?.profile || null,
     presenceOnly: socket.handshake.auth?.presence === true,
     fpId: null, ip, geo: null, country: null,
+    browserId: /^[a-zA-Z0-9-]{16,64}$/.test(socket.handshake.auth?.browserId || "") ? socket.handshake.auth.browserId : null,
     mode: "video", interests: [], gender: "any", wantGender: "any",
     college: false, language: null, sameCountry: false,
     state: "idle", roomId: null, waitingSince: null,
@@ -1279,7 +1285,7 @@ io.on("connection", (socket) => {
     const peer = typeof rid === "string" && peerFromRecentRoom(rid);
     if (!peer) return reply({ error: "Chat not found" });
     const other = participants.get(peer.sid);
-    addAvoid(p, { userId: peer.userId, fpId: other?.fpId || null });
+    addAvoid(p, { userId: peer.userId, browserId: other?.browserId || null });
     if (p.userId && peer.userId) {
       p.blocked.add(peer.userId);
       if (other) other.blocked.add(p.userId);
@@ -1299,7 +1305,7 @@ io.on("connection", (socket) => {
     const shot = typeof screenshotB64 === "string" && screenshotB64.startsWith("data:image/") && screenshotB64.length < 300_000 ? screenshotB64 : null;
     const other = participants.get(peer.sid);
     // Remember this person so we don't match them again today
-    addAvoid(p, { userId: peer.userId, fpId: other?.fpId || null });
+    addAvoid(p, { userId: peer.userId, browserId: other?.browserId || null });
     await fileReport(p, peer.sid, peer.userId, targetRoom, {
       reason,
       details: typeof details === "string" ? details.slice(0, 500) : null,

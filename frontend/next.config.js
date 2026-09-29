@@ -1,3 +1,8 @@
+// The signaling server may live on another origin (e.g. http://localhost:4000 in dev)
+const signalingOrigin = (() => {
+  try { return new URL(process.env.NEXT_PUBLIC_SIGNALING_URL || "").origin; } catch { return ""; }
+})();
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
@@ -25,7 +30,7 @@ const nextConfig = {
       // Media: self + blob (local camera/mic streams)
       "media-src 'self' blob:",
       // WebSockets: signaling server + Supabase realtime
-      "connect-src 'self' wss: ws: https://*.supabase.co https://www.google-analytics.com https://chat.videodownloaders.cloud https://pagead2.googlesyndication.com",
+      `connect-src 'self' ${signalingOrigin} wss: ws: https://*.supabase.co https://www.google-analytics.com https://chat.videodownloaders.cloud https://pagead2.googlesyndication.com`,
       // Worker (service worker)
       "worker-src 'self' blob:",
       // Frames: AdSense iframes

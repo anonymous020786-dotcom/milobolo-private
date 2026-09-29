@@ -36,8 +36,8 @@ test("same-country filter", () => {
 });
 
 test("avoid list and blocks prevent rematching", () => {
-  const a = base("a", { avoid: new Set(["f:fp-b"]) });
-  const b = base("b", { fpId: "fp-b" });
+  const a = base("a", { avoid: new Set(["b:browser-b"]) });
+  const b = base("b", { browserId: "browser-b" });
   assert.ok(!mm.compatible(a, b));
   assert.ok(!mm.compatible(b, a), "avoidance is checked in both directions");
 

@@ -6,6 +6,7 @@ import { ThemeProvider, CssBaseline } from "@mui/material";
 import { GoogleReCaptchaProvider } from "react-google-recaptcha-v3";
 import { AuthProvider } from "@/context/AuthContext";
 import { FeatureFlagProvider } from "@/context/FeatureFlagContext";
+import { RealtimeProvider } from "@/context/RealtimeContext";
 import { AppThemeProvider, useAppTheme, buildMuiTheme } from "@/context/ThemeContext";
 import { AccessibilityProvider } from "@/context/AccessibilityContext";
 import Script from "next/script";
@@ -44,7 +45,9 @@ function ThemedApp({ Component, pageProps }: AppProps) {
       <GoogleReCaptchaProvider reCaptchaKey={RECAPTCHA_KEY}>
         <AuthProvider>
           <FeatureFlagProvider>
+            <RealtimeProvider>
             <Component {...pageProps} />
+            </RealtimeProvider>
             <PWAInstallBanner />
             <CookieConsent />
             <WelcomeModal />

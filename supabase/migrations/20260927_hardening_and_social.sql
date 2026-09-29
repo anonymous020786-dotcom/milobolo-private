@@ -88,6 +88,12 @@ create policy "Users can view own history" on public.chat_history
   for select using (auth.uid() = user_id);
 create policy "Users can delete own history" on public.chat_history
   for delete using (auth.uid() = user_id);
+-- The admin "Chat Logs" tab could never read other users' rows
+drop policy if exists "Staff can view all history" on public.chat_history;
+create policy "Staff can view all history" on public.chat_history
+  for select using (
+    exists (select 1 from public.profiles where id = auth.uid() and role in ('moderator','admin','superadmin'))
+  );
 
 create or replace function public.bump_total_chats()
 returns trigger language plpgsql security definer set search_path = public as $$
