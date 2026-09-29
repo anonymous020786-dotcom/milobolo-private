@@ -8,7 +8,6 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import ErrorIcon from "@mui/icons-material/Error";
 import WarningIcon from "@mui/icons-material/Warning";
 import Layout from "@/components/Layout";
-import { io } from "socket.io-client";
 
 type ServiceStatus = "operational" | "degraded" | "outage" | "checking";
 
@@ -67,9 +66,13 @@ export default function StatusPage() {
         const res = await fetch(`${sigUrl}/health`, { signal: AbortSignal.timeout(5000) });
         const latency = Date.now() - t0;
         if (res.ok) {
+          const health = await res.json().catch(() => ({}));
           updateService("Signaling Server", latency < 300 ? "operational" : "degraded", latency);
           updateService("Text Chat", latency < 400 ? "operational" : "degraded", latency);
           updateService("Video Chat", latency < 400 ? "operational" : "degraded", latency);
+          if (typeof health.online === "number") setOnlineCount(health.online);
+          // The signaling server's own database check reflects whether chats can be saved
+          if (health.database === "error") updateService("Database", "degraded");
         } else {
           updateService("Signaling Server", "outage");
           updateService("Text Chat", "outage");
@@ -80,13 +83,6 @@ export default function StatusPage() {
         updateService("Text Chat", "outage");
         updateService("Video Chat", "outage");
       }
-
-      // Check online count via socket briefly
-      try {
-        const socket = io(sigUrl, { transports: ["websocket"], timeout: 4000 });
-        socket.on("online_count", (n: number) => { setOnlineCount(n); socket.disconnect(); });
-        setTimeout(() => socket.disconnect(), 5000);
-      } catch { /* silent */ }
 
       // Check Supabase / auth (just the Next.js page load implies CDN is fine)
       updateService("CDN / Static Files", "operational");

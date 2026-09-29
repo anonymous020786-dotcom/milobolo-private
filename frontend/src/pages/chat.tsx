@@ -1,5 +1,5 @@
 import {
-  useState, useEffect, useRef, useCallback,
+  useState, useEffect, useRef, useCallback, useMemo,
 } from "react";
 import { useRouter } from "next/router";
 import Head from "next/head";
@@ -34,12 +34,22 @@ import LinkIcon from "@mui/icons-material/Link";
 import SignalCellularAltIcon from "@mui/icons-material/SignalCellularAlt";
 import SignalCellular2BarIcon from "@mui/icons-material/SignalCellular2Bar";
 import SignalCellular0BarIcon from "@mui/icons-material/SignalCellular0Bar";
-import { io, Socket } from "socket.io-client";
+import SportsEsportsIcon from "@mui/icons-material/SportsEsports";
+import CloseIcon from "@mui/icons-material/Close";
+import VerifiedIcon from "@mui/icons-material/Verified";
+import SchoolIcon from "@mui/icons-material/School";
+import StarIcon from "@mui/icons-material/Star";
+import { Socket } from "socket.io-client";
 import styles from "@/styles/chat.module.css";
 import AgeGate from "@/components/AgeGate";
 import FloatingToolbar from "@/components/FloatingToolbar";
 import OnlineCounter from "@/components/OnlineCounter";
 import FriendRequestDialog from "@/components/chat/FriendRequestDialog";
+import ChatMessage, { ChatMsg, ReplyRef } from "@/components/chat/ChatMessage";
+import TicTacToe, { GameState } from "@/components/chat/TicTacToe";
+import VoiceNoteButton from "@/components/chat/VoiceNoteButton";
+import Icebreakers from "@/components/chat/Icebreakers";
+import PostChatCard from "@/components/chat/PostChatCard";
 import { useFeatureFlags } from "@/context/FeatureFlagContext";
 import { useAuth } from "@/context/AuthContext";
 import { useFingerprint } from "@/hooks/useFingerprint";
@@ -49,20 +59,43 @@ import {
   generateKeyPair, deriveSharedKey,
   encryptMessage, decryptMessage, E2ESession,
 } from "@/lib/e2e";
-import { supabase } from "@/lib/supabase";
+import { createSignalSocket } from "@/lib/socket";
 
 type ChatState = "idle" | "waiting" | "connected" | "ended";
 type Quality = "good" | "fair" | "poor" | null;
 
 interface GeoInfo { country: string; countryName: string; flag: string; }
-interface Message {
-  id: string;
-  from: "me" | "peer" | "system";
-  text: string;
-  ts: number;
-  encrypted: boolean;
-  imageUrl?: string;
+type Message = ChatMsg;
+interface QueueInfo { position: number; waiting: number; avgWaitSeconds: number | null; waitedSeconds: number; }
+
+// Text messages travel as a small JSON envelope (encrypted end-to-end when E2E is on)
+// so replies stay private too.
+interface Envelope { t: string; r?: ReplyRef | null }
+function packEnvelope(text: string, replyTo: ReplyRef | null) {
+  return JSON.stringify(replyTo ? { t: text, r: replyTo } : { t: text });
 }
+function unpackEnvelope(raw: string): Envelope {
+  if (raw.startsWith("{")) {
+    try {
+      const e = JSON.parse(raw);
+      if (typeof e?.t === "string") {
+        const r = e.r && typeof e.r.id === "string" && typeof e.r.text === "string"
+          ? { id: e.r.id.slice(0, 64), text: e.r.text.slice(0, 140), from: e.r.from === "me" ? "me" as const : "peer" as const }
+          : null;
+        return { t: e.t, r };
+      }
+    } catch {}
+  }
+  return { t: raw };
+}
+function newMsgId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+const BADGE_META: Record<string, { label: string; icon: JSX.Element; color: string }> = {
+  verified: { label: "Verified", icon: <VerifiedIcon sx={{ fontSize: "12px !important" }} />, color: "#4FC3F7" },
+  college: { label: "Student", icon: <SchoolIcon sx={{ fontSize: "12px !important" }} />, color: "#FFB74D" },
+  trusted: { label: "Trusted", icon: <StarIcon sx={{ fontSize: "12px !important" }} />, color: "#81C784" },
+};
 
 const ICE = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -109,7 +142,11 @@ export default function Chat() {
   const [camOn, setCamOn] = useState(true);
   const [sharingScreen, setSharingScreen] = useState(false);
   const [peerSharingScreen, setPeerSharingScreen] = useState(false);
-  const [interests] = useState<string[]>(initialInterests);
+  // Derived from the URL on every render: router.query is empty on the first render,
+  // so capturing it in useState silently sent no interests to the matcher.
+  const interestsKey = initialInterests.join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const interests = useMemo(() => initialInterests, [interestsKey]);
   const [matchedInterest, setMatchedInterest] = useState<string | null>(null);
   const [peerCountry, setPeerCountry] = useState<GeoInfo | null>(null);
   const [myGeo, setMyGeo] = useState<GeoInfo | null>(null);
@@ -139,8 +176,19 @@ export default function Chat() {
   const [peerGender, setPeerGender] = useState<string | null>(null);
   const [isReconnecting, setIsReconnecting] = useState(false);
   const [confirmAction, setConfirmAction] = useState<"next" | "stop" | null>(null);
+  const [replyTo, setReplyTo] = useState<ReplyRef | null>(null);
+  const [game, setGame] = useState<GameState | null>(null);
+  const [queueInfo, setQueueInfo] = useState<QueueInfo | null>(null);
+  const [peerBadges, setPeerBadges] = useState<string[]>([]);
+  const [sharedInterests, setSharedInterests] = useState<string[]>([]);
+  const [peerIsMember, setPeerIsMember] = useState(false);
+  const [lastRoomId, setLastRoomId] = useState("");
+  const [autoNextIn, setAutoNextIn] = useState<number | null>(null);
+  const [announcement, setAnnouncement] = useState<{ message: string; level: string } | null>(null);
 
   // ── refs ─────────────────────────────────────────────────
+  const unseenPeerIdsRef = useRef<string[]>([]);
+  const audioUrlsRef = useRef<string[]>([]);
   const socketRef = useRef<Socket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const reconnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -274,6 +322,8 @@ export default function Chat() {
       .map((m) => {
         const d = new Date(m.ts).toLocaleTimeString();
         const who = m.from === "me" ? "You" : strangerLabel;
+        if (m.deleted) return `[${d}] ${who}: [unsent]`;
+        if (m.audioUrl) return `[${d}] ${who}: [Voice note ${Math.round(m.audioDuration || 0)}s]`;
         return m.imageUrl ? `[${d}] ${who}: [Image] ${m.imageUrl}` : `[${d}] ${who}: ${m.text}`;
       });
     const blob = new Blob([lines.join("\n")], { type: "text/plain" });
@@ -295,9 +345,10 @@ export default function Chat() {
       const res = await fetch("/api/upload-chat-image", { method: "POST", body: form });
       const { url, error } = await res.json();
       if (error || !url) { setSnack(error || "Image upload failed."); return; }
-      socketRef.current?.emit("image_message", { roomId, imageUrl: url, senderRole: null });
+      const id = newMsgId();
+      socketRef.current?.emit("image_message", { roomId, imageUrl: url, id });
       setMessages((prev) => [...prev, {
-        id: `img-me-${Date.now()}`, from: "me", text: "", ts: Date.now(), encrypted: false, imageUrl: url,
+        id, from: "me", text: "", ts: Date.now(), encrypted: false, imageUrl: url,
       }]);
     } catch {
       setSnack("Image upload failed.");
@@ -320,18 +371,35 @@ export default function Chat() {
     setPeerTyping(false); setMatchedInterest(null); matchedInterestRef.current = null;
     setPeerCountry(null); setStrangerLabel("Stranger"); setVoiceActive(false);
     setQuality(null); setShowReactions(false);
+    setGame(null); setReplyTo(null); setQueueInfo(null);
+    setPeerBadges([]); setSharedInterests([]);
+    unseenPeerIdsRef.current = [];
   }, []);
 
-  const saveHistory = useCallback(async (rid: string, mc: number, mi: string | null) => {
-    if (!user || !isEnabled("chat_history")) return;
-    const duration = sessionStart ? Math.floor((Date.now() - sessionStart) / 1000) : 0;
-    await supabase.from("chat_history").insert({
-      user_id: user.id, mode, room_id: rid,
-      duration_seconds: duration, message_count: mc, matched_interest: mi,
-      started_at: new Date(sessionStart || Date.now()).toISOString(),
-      ended_at: new Date().toISOString(),
-    });
-  }, [user, mode, sessionStart, isEnabled]);
+  // Voice-note blob URLs are kept until the next chat so the transcript stays playable
+  const releaseAudio = useCallback(() => {
+    audioUrlsRef.current.forEach((u) => URL.revokeObjectURL(u));
+    audioUrlsRef.current = [];
+  }, []);
+  useEffect(() => releaseAudio, [releaseAudio]);
+
+  // ── Read receipts ────────────────────────────────────────
+  const flushSeen = useCallback(() => {
+    if (!settings.sendReadReceipts || document.hidden) return;
+    const ids = unseenPeerIdsRef.current;
+    if (!ids.length || !roomIdRef.current) return;
+    unseenPeerIdsRef.current = [];
+    socketRef.current?.emit("msg_seen", { roomId: roomIdRef.current, ids });
+  }, [settings.sendReadReceipts]);
+
+  useEffect(() => {
+    document.addEventListener("visibilitychange", flushSeen);
+    window.addEventListener("focus", flushSeen);
+    return () => {
+      document.removeEventListener("visibilitychange", flushSeen);
+      window.removeEventListener("focus", flushSeen);
+    };
+  }, [flushSeen]);
 
   const getLocalStream = useCallback(async () => {
     try {
@@ -404,40 +472,45 @@ export default function Chat() {
   }, [isEnabled]);
 
   // ── socket setup ─────────────────────────────────────────
+  // fpId and state are read through refs so the socket isn't torn down (and the
+  // search silently dropped) when the fingerprint resolves after auto-start.
+  const fpIdRef = useRef<string | null>(null);
+  useEffect(() => { fpIdRef.current = fpId || null; }, [fpId]);
+  const stateRef = useRef<ChatState>("idle");
+  useEffect(() => { stateRef.current = state; }, [state]);
+  const autoNextTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const cancelAutoNext = useCallback(() => {
+    if (autoNextTimer.current) { clearInterval(autoNextTimer.current); autoNextTimer.current = null; }
+    setAutoNextIn(null);
+  }, []);
+
   useEffect(() => {
-    const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000", {
-      transports: ["websocket"],
-      reconnection: true,
-      reconnectionAttempts: 8,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 8000,
-    });
+    const socket = createSignalSocket();
     socketRef.current = socket;
+    let everConnected = false;
 
     socket.on("connect", () => {
       setConnected(true);
-      if (fpId) socket.emit("fingerprint", { fpId });
+      if (fpIdRef.current) socket.emit("fingerprint", { fpId: fpIdRef.current });
+      if (everConnected) {
+        // New socket id after a reconnect: the server has forgotten our queue/room
+        setSnack("Reconnected to server.");
+        if (stateRef.current === "waiting") startSearchRef.current?.();
+        else if (stateRef.current === "connected") {
+          setState("ended");
+          setMessages((prev) => [...prev, { id: `sys-drop-${Date.now()}`, from: "system", text: "Connection dropped — the chat ended.", ts: Date.now(), encrypted: false }]);
+          cleanup();
+        }
+      }
+      everConnected = true;
     });
     socket.on("disconnect", () => setConnected(false));
-    socket.on("reconnect", () => {
-      setConnected(true);
-      setSnack("Reconnected to server.");
-      // Re-emit fingerprint so the server recognises us again
-      if (fpId) socket.emit("fingerprint", { fpId });
-      // If we were waiting for a match, re-queue automatically
-      setState((prev) => {
-        if (prev === "waiting") {
-          const interests = (typeof window !== "undefined"
-            ? new URLSearchParams(window.location.search).get("interests")
-            : null) || "";
-          socket.emit("find_peer", {
-            mode,
-            interests: interests ? interests.split(",") : [],
-            userId: null,
-          });
-        }
-        return prev;
-      });
+    socket.on("connect_error", (err) => {
+      if (err.message === "banned") {
+        setSnack("Your account is banned.");
+        setTimeout(() => router.push("/"), 3000);
+      }
     });
 
     socket.on("banned", ({ reason }) => {
@@ -445,18 +518,37 @@ export default function Chat() {
       setTimeout(() => router.push("/"), 3000);
     });
 
+    socket.on("announcement", ({ message, level }) => setAnnouncement({ message, level }));
+
     socket.on("waiting", ({ country }) => {
       setState("waiting");
       if (country) setMyGeo(country);
     });
 
-    socket.on("match_found", async ({ roomId: rid, isInitiator, peer, matchedInterest: mi, peerCountry: pc, myCountry: mc, peerGender: pg }) => {
+    socket.on("queue_status", (q: QueueInfo) => setQueueInfo(q));
+
+    socket.on("college_required", ({ message }) => {
+      setState("idle");
+      setSnack(message);
+      setTimeout(() => router.push("/college"), 1500);
+    });
+
+    socket.on("match_found", async ({
+      roomId: rid, isInitiator, peer, matchedInterest: mi, peerCountry: pc, myCountry: mc,
+      peerGender: pg, peerBadges: badges, sharedInterests: shared, peerIsMember: member,
+    }) => {
+      cancelAutoNext();
       setRoomId(rid);
+      setLastRoomId(rid);
       setPeerId(peer);
       peerIdRef.current = peer;
       roomIdRef.current = rid;
       setState("connected");
+      setQueueInfo(null);
       setPeerGender(pg || null);
+      setPeerBadges(Array.isArray(badges) ? badges : []);
+      setSharedInterests(Array.isArray(shared) ? shared : []);
+      setPeerIsMember(!!member);
       if (settings.playMessageSound) playMatchSound();
       setSessionStart(Date.now());
       msgCountRef.current = 0;
@@ -483,9 +575,12 @@ export default function Chat() {
         } catch {}
       }
 
-      const sysText = mi
-        ? `You're now chatting with a random stranger. You both like ${mi}. Say hi!`
-        : `You're now chatting with a random stranger${pc ? ` from ${pc.flag} ${pc.countryName}` : ""}. Say hi!`;
+      const sharedList: string[] = Array.isArray(shared) ? shared : [];
+      const sysText = sharedList.length > 1
+        ? `You're now chatting with a random stranger. You both like ${sharedList.slice(0, 3).join(", ")}. Say hi!`
+        : mi
+          ? `You're now chatting with a random stranger. You both like ${mi}. Say hi!`
+          : `You're now chatting with a random stranger${pc ? ` from ${pc.flag} ${pc.countryName}` : ""}. Say hi!`;
       setMessages([{ id: "sys-0", from: "system", text: sysText, ts: Date.now(), encrypted: false }]);
 
       if (mode === "video" || mode === "voice") createPeerConnection(isInitiator);
@@ -527,83 +622,130 @@ export default function Chat() {
       }
     });
 
-    socket.on("message", async ({ ciphertext, text: plain, ts, encrypted }) => {
-      let decoded = plain || "";
+    socket.on("message", async ({ id, ciphertext, text: plain, ts, encrypted }) => {
+      let raw = plain || "";
       if (encrypted && sharedKeyRef.current && ciphertext) {
-        try { decoded = await decryptMessage(sharedKeyRef.current, ciphertext); }
-        catch { decoded = "[could not decrypt]"; }
+        try { raw = await decryptMessage(sharedKeyRef.current, ciphertext); }
+        catch { raw = "[could not decrypt]"; }
       }
+      const env = unpackEnvelope(raw);
+      // The reply's "from" is relative to the sender; flip it to our point of view
+      const replyRef = env.r ? { ...env.r, from: env.r.from === "me" ? "peer" as const : "me" as const } : null;
+      const msgId = typeof id === "string" ? id : newMsgId();
       setMessages((prev) => [...prev,
-        { id: `${ts}-${Math.random()}`, from: "peer", text: decoded, ts, encrypted: !!encrypted },
+        { id: msgId, from: "peer", text: env.t, ts, encrypted: !!encrypted, replyTo: replyRef },
       ]);
+      setPeerTyping(false);
       msgCountRef.current += 1;
+      unseenPeerIdsRef.current.push(msgId);
+      flushSeen();
+    });
+
+    socket.on("msg_seen", ({ ids }: { ids: string[] }) => {
+      const set = new Set(ids);
+      setMessages((prev) => prev.map((m) => (m.from === "me" && set.has(m.id) ? { ...m, seen: true } : m)));
+    });
+    socket.on("msg_unsend", ({ id }) => {
+      setMessages((prev) => prev.map((m) => (m.id === id && m.from === "peer" ? { ...m, deleted: true, text: "" } : m)));
+    });
+    socket.on("msg_react", ({ id, emoji }) => {
+      setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, reactions: { ...m.reactions, peer: emoji } } : m)));
     });
 
     socket.on("typing", ({ typing }) => { if (settings.showTypingIndicator) setPeerTyping(typing); });
-    socket.on("image_message", ({ imageUrl, ts }) => {
+    socket.on("image_message", ({ id, imageUrl, ts }) => {
+      const msgId = typeof id === "string" ? id : newMsgId();
       setMessages((prev) => [...prev, {
-        id: `img-peer-${ts}`, from: "peer", text: "", ts, encrypted: false, imageUrl,
+        id: msgId, from: "peer", text: "", ts, encrypted: false, imageUrl,
       }]);
+      unseenPeerIdsRef.current.push(msgId);
+      flushSeen();
+    });
+    socket.on("voice_note", ({ id, audio, mime, duration, ts }) => {
+      const url = URL.createObjectURL(new Blob([audio], { type: mime || "audio/webm" }));
+      audioUrlsRef.current.push(url);
+      const msgId = typeof id === "string" ? id : newMsgId();
+      setMessages((prev) => [...prev, {
+        id: msgId, from: "peer", text: "", ts, encrypted: false, audioUrl: url, audioDuration: duration,
+      }]);
+      unseenPeerIdsRef.current.push(msgId);
+      flushSeen();
     });
     socket.on("reaction", ({ emoji }) => { setPeerReaction(emoji); setTimeout(() => setPeerReaction(null), 2500); });
     socket.on("peer_screen_share", ({ active }) => setPeerSharingScreen(active));
 
-    socket.on("friend_request", ({ from, fromUserId, fromName }) => {
-      if (isEnabled("friend_requests")) setFriendReq({ open: true, from, fromUserId, fromName });
+    socket.on("game_state", (g: GameState | null) => setGame(g));
+    socket.on("game_declined", () => setSnack("The stranger doesn't want to play right now."));
+    socket.on("game_error", ({ message }) => setSnack(message));
+
+    socket.on("friend_request", ({ from, fromName }) => {
+      if (isEnabled("friend_requests") && settings.allowFriendRequests) setFriendReq({ open: true, from, fromUserId: "", fromName });
+    });
+    socket.on("friend_request_sent", () => setSnack("Connection request sent!"));
+    socket.on("friend_response", ({ accepted }) => {
+      setSnack(accepted ? "🎉 You're now friends! Message them from the Messages page." : "Request declined.");
     });
 
-    socket.on("friend_response", async ({ accepted, fromUserId, toUserId }) => {
-      if (accepted) {
-        try { await supabase.from("connections").insert({ requester_id: fromUserId, receiver_id: toUserId, status: "accepted" }); } catch {}
-        setSnack("🎉 Connected! Find them in your profile.");
-      } else {
-        setSnack("Request declined.");
-      }
-    });
-
-    socket.on("peer_left", async () => {
+    socket.on("peer_left", () => {
       if (settings.playMessageSound) playDisconnectSound();
       setState("ended");
       window.dispatchEvent(new Event("milobolo:chat_ended"));
       setMessages((prev) => [...prev, {
-        id: "sys-end", from: "system",
+        id: `sys-end-${Date.now()}`, from: "system",
         text: "Your conversational partner has disconnected.",
         ts: Date.now(), encrypted: false,
       }]);
-      await saveHistory(roomIdRef.current, msgCountRef.current, matchedInterestRef.current);
       cleanup();
+      if (settings.autoNext) {
+        let n = 3;
+        setAutoNextIn(n);
+        autoNextTimer.current = setInterval(() => {
+          n -= 1;
+          if (n <= 0) {
+            cancelAutoNext();
+            startSearchRef.current?.();
+          } else setAutoNextIn(n);
+        }, 1000);
+      }
     });
 
     socket.on("report_received", () => setSnack("Report submitted. Thank you."));
     socket.on("error", ({ message }) => setSnack(message));
 
-    return () => { socket.disconnect(); cleanup(); };
+    return () => { cancelAutoNext(); socket.disconnect(); cleanup(); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fpId, mode]);
+  }, [mode]);
+
+  // An invite link is single-use: after the first chat, "New" goes to the random pool
+  const inviteUsedRef = useRef(false);
 
   const startSearch = useCallback(async () => {
     if (mode === "video" || mode === "voice") {
-      const stream = await getLocalStream();
+      const stream = localStreamRef.current?.active ? localStreamRef.current : await getLocalStream();
       if (!stream) return;
     }
+    releaseAudio();
     setState("waiting");
     setMessages([]);
+    setQueueInfo(null);
     setRoomId(""); setPeerId(""); peerIdRef.current = ""; roomIdRef.current = "";
     const urlParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
     const myGenderParam = urlParams?.get("gender") || "any";
     const wantGenderParam = urlParams?.get("wantGender") || "any";
     const collegeParam = urlParams?.get("college") === "1";
-    const inviteParam = urlParams?.get("invite") || null;
+    const inviteParam = inviteUsedRef.current ? null : urlParams?.get("invite") || null;
+    if (inviteParam) inviteUsedRef.current = true;
     socketRef.current?.emit("find_match", {
-      mode, userId: user?.id || null,
+      mode,
       interests: isEnabled("interest_matching") ? interests : [],
       gender: myGenderParam,
       wantGender: wantGenderParam,
       college: collegeParam,
       language: settings.defaultLanguage || null,
+      sameCountry: settings.sameCountryOnly,
       invite: inviteParam,
     });
-  }, [mode, user, interests, isEnabled, getLocalStream]);
+  }, [mode, interests, isEnabled, getLocalStream, releaseAudio, settings]);
 
   // Keep ref in sync so ICE reconnect timer can call startSearch without stale closure
   useEffect(() => { startSearchRef.current = startSearch; }, [startSearch]);
@@ -612,22 +754,22 @@ export default function Chat() {
     if (nextCooldown) return;
     setNextCooldown(true);
     setTimeout(() => setNextCooldown(false), 2000);
-    await saveHistory(roomIdRef.current, msgCountRef.current, matchedInterestRef.current);
+    cancelAutoNext();
     cleanup();
     setState("idle");
     setMessages([]);
     socketRef.current?.emit("next");
     setTimeout(() => startSearch(), 300);
-  }, [nextCooldown, cleanup, startSearch, saveHistory]);
+  }, [nextCooldown, cleanup, startSearch, cancelAutoNext]);
 
   const execStop = useCallback(async () => {
-    await saveHistory(roomIdRef.current, msgCountRef.current, matchedInterestRef.current);
+    cancelAutoNext();
     cleanup();
     setState("idle");
     setMessages([]);
     socketRef.current?.emit("cancel_search");
     socketRef.current?.emit("next");
-  }, [cleanup, saveHistory]);
+  }, [cleanup, cancelAutoNext]);
 
   const handleNext = useCallback(async () => {
     if (state === "connected") { setConfirmAction("next"); return; }
@@ -749,8 +891,8 @@ export default function Chat() {
   const FLOOD_WINDOW = 3000;
   const FLOOD_LIMIT = 5;
 
-  const sendMessage = useCallback(async () => {
-    if (!text.trim() || !roomId) return;
+  const sendText = useCallback(async (plain: string, reply: ReplyRef | null = null) => {
+    if (!plain || !roomIdRef.current) return;
 
     // Client-side rate limit
     const now = Date.now();
@@ -761,24 +903,66 @@ export default function Chat() {
     }
     msgTimestamps.current.push(now);
 
-    const plain = text.trim();
-    setText("");
-    setIsTyping(false);
-    socketRef.current?.emit("typing", { roomId, typing: false });
-
-    let payload: Record<string, unknown> = { roomId };
-    if (isEnabled("e2e_encryption") && sharedKeyRef.current) {
-      const ciphertext = await encryptMessage(sharedKeyRef.current, plain);
+    const id = newMsgId();
+    const envelope = packEnvelope(plain, reply);
+    let payload: Record<string, unknown> = { roomId: roomIdRef.current, id };
+    const encrypt = isEnabled("e2e_encryption") && !!sharedKeyRef.current;
+    if (encrypt) {
+      const ciphertext = await encryptMessage(sharedKeyRef.current!, envelope);
       payload = { ...payload, ciphertext, encrypted: true };
     } else {
-      payload = { ...payload, plain, encrypted: false };
+      payload = { ...payload, plain: envelope, encrypted: false };
     }
     socketRef.current?.emit("message", payload);
     setMessages((prev) => [...prev,
-      { id: `${Date.now()}-me`, from: "me", text: plain, ts: Date.now(), encrypted: isEnabled("e2e_encryption") },
+      { id, from: "me", text: plain, ts: Date.now(), encrypted: encrypt, replyTo: reply },
     ]);
     msgCountRef.current += 1;
-  }, [text, roomId, isEnabled]);
+  }, [isEnabled]);
+
+  const sendMessage = useCallback(async () => {
+    const plain = text.trim();
+    if (!plain || !roomId) return;
+    setText("");
+    setIsTyping(false);
+    socketRef.current?.emit("typing", { roomId, typing: false });
+    const reply = replyTo;
+    setReplyTo(null);
+    await sendText(plain, reply);
+  }, [text, roomId, replyTo, sendText]);
+
+  // ── Message actions ──────────────────────────────────────
+  const handleReply = useCallback((m: Message) => {
+    const preview = m.text || (m.imageUrl ? "[image]" : m.audioUrl ? "[voice note]" : "");
+    setReplyTo({ id: m.id, text: preview.slice(0, 140), from: m.from === "me" ? "me" : "peer" });
+  }, []);
+
+  const handleReact = useCallback((m: Message, emoji: string | null) => {
+    socketRef.current?.emit("msg_react", { roomId: roomIdRef.current, id: m.id, emoji });
+    setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, reactions: { ...x.reactions, me: emoji } } : x)));
+  }, []);
+
+  const handleUnsend = useCallback((m: Message) => {
+    socketRef.current?.emit("msg_unsend", { roomId: roomIdRef.current, id: m.id });
+    setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, deleted: true, text: "" } : x)));
+  }, []);
+
+  const sendVoiceNote = useCallback(async (blob: Blob, mime: string, seconds: number) => {
+    if (!roomIdRef.current) return;
+    if (blob.size > 400_000) { setSnack("Voice note too long."); return; }
+    const id = newMsgId();
+    const audio = await blob.arrayBuffer();
+    socketRef.current?.emit("voice_note", { roomId: roomIdRef.current, id, audio, mime, duration: seconds });
+    const url = URL.createObjectURL(blob);
+    audioUrlsRef.current.push(url);
+    setMessages((prev) => [...prev, { id, from: "me", text: "", ts: Date.now(), encrypted: false, audioUrl: url, audioDuration: seconds }]);
+    msgCountRef.current += 1;
+  }, []);
+
+  const gameAction = useCallback((action: string, cell?: number) => {
+    socketRef.current?.emit("game_action", { roomId: roomIdRef.current, action, cell });
+    if (action === "quit" || action === "decline") setGame(null);
+  }, []);
 
   const sendReaction = (emoji: string) => {
     socketRef.current?.emit("reaction", { roomId, emoji });
@@ -787,33 +971,37 @@ export default function Chat() {
 
   const sendFriendRequest = () => {
     if (!user) return setSnack("Sign in to send connection requests.");
-    socketRef.current?.emit("friend_request", { to: peerId, fromUserId: user.id, fromName: profile?.display_name || "Anonymous" });
-    setSnack("Connection request sent!");
+    socketRef.current?.emit("friend_request");
   };
 
-  const respondFriendRequest = async (accepted: boolean) => {
+  const respondFriendRequest = (accepted: boolean) => {
     setFriendReq((prev) => ({ ...prev, open: false }));
-    socketRef.current?.emit("friend_response", { to: friendReq.from, accepted, fromUserId: friendReq.fromUserId, toUserId: user?.id });
-    if (accepted && friendReq.fromUserId && user?.id) {
-      try { await supabase.from("connections").insert({ requester_id: friendReq.fromUserId, receiver_id: user.id, status: "accepted" }); } catch {}
-    }
+    socketRef.current?.emit("friend_response", { accepted });
   };
+
+  const ratePeer = useCallback(async (score: 1 | -1) => {
+    await new Promise((resolve) => socketRef.current?.emit("rate_peer", { roomId: lastRoomId, score }, resolve));
+  }, [lastRoomId]);
+
+  const blockPeer = useCallback(async () => {
+    await new Promise((resolve) => socketRef.current?.emit("block_peer", { roomId: lastRoomId }, resolve));
+    setSnack("You won't be matched with this person again.");
+  }, [lastRoomId]);
 
   const submitReport = () => {
     let screenshotB64: string | null = null;
     try {
-      const canvas = document.createElement("canvas");
       const video = remoteVideoRef.current;
-      if (video) {
+      if (mode === "video" && video && video.videoWidth > 0) {
+        const canvas = document.createElement("canvas");
         canvas.width = 320; canvas.height = 240;
         canvas.getContext("2d")?.drawImage(video, 0, 0, 320, 240);
         screenshotB64 = canvas.toDataURL("image/jpeg", 0.5);
       }
     } catch {}
-    socketRef.current?.emit("report", { reportedId: peerId, reason: reportReason, details: reportDetails, screenshotB64 });
+    socketRef.current?.emit("report", { roomId: roomId || lastRoomId, reason: reportReason, details: reportDetails, screenshotB64 });
     setReportDialog(false);
     setReportDetails("");
-    setSnack("Report submitted. Thank you.");
   };
 
   const copyTranscript = () => {
@@ -835,7 +1023,7 @@ export default function Chat() {
   // ─── Render ────────────────────────────────────────────────
   return (
     <>
-      <Head><title>MiloBolo — {mode === "video" ? "Video" : mode === "voice" ? "Voice" : "Text"} Chat</title></Head>
+      <Head><title>{`MiloBolo — ${mode === "video" ? "Video" : mode === "voice" ? "Voice" : "Text"} Chat`}</title></Head>
       <AgeGate />
 
       <Box sx={{
@@ -920,6 +1108,17 @@ export default function Chat() {
             <OnlineCounter />
           </Box>
         </Box>
+
+        {announcement && (
+          <Box role="status" sx={{
+            flexShrink: 0, px: 2, py: 0.75, display: "flex", alignItems: "center", gap: 1,
+            bgcolor: announcement.level === "warning" ? "rgba(255,152,0,0.12)" : announcement.level === "success" ? "rgba(76,175,80,0.12)" : "rgba(108,99,255,0.12)",
+            borderBottom: "1px solid rgba(255,255,255,0.08)",
+          }}>
+            <Typography fontSize={13} sx={{ flex: 1 }}>📣 {announcement.message}</Typography>
+            <IconButton size="small" onClick={() => setAnnouncement(null)} aria-label="Dismiss announcement"><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
+          </Box>
+        )}
 
         {/* ── Main area — responsive layout ── */}
         <Box sx={{
@@ -1190,9 +1389,16 @@ export default function Chat() {
                 )}
 
                 {matchedInterest && (
-                  <Chip label={`You both like: ${matchedInterest}`} size="small" color="primary" variant="outlined"
+                  <Chip label={`You both like: ${(sharedInterests.length ? sharedInterests : [matchedInterest]).slice(0, 3).join(", ")}`}
+                    size="small" color="primary" variant="outlined"
                     sx={{ height: 22, fontSize: 11 }} />
                 )}
+                {isConnected && peerBadges.filter((b) => BADGE_META[b]).map((b) => (
+                  <Tooltip key={b} title={b === "trusted" ? "Rated well by other people" : b === "college" ? "Verified student" : "Verified account"}>
+                    <Chip icon={BADGE_META[b].icon} label={BADGE_META[b].label} size="small" variant="outlined"
+                      sx={{ height: 20, fontSize: 10, color: BADGE_META[b].color, borderColor: BADGE_META[b].color, "& .MuiChip-icon": { color: BADGE_META[b].color } }} />
+                  </Tooltip>
+                ))}
                 {!matchedInterest && myGeo && isConnected && (
                   <Typography variant="caption" color="text.disabled" sx={{ fontSize: 11 }}>
                     {myGeo.flag} You → {strangerLabel}
@@ -1292,67 +1498,41 @@ export default function Chat() {
                     </Typography>
                   </Box>
                 )}
+                {isWaiting && queueInfo && (
+                  <Typography fontSize={12} color="text.disabled" sx={{ mb: 1 }}>
+                    {queueInfo.waiting > 1 ? `${queueInfo.waiting} people waiting in this mode · ` : ""}
+                    waited {queueInfo.waitedSeconds}s
+                    {queueInfo.avgWaitSeconds != null ? ` · usual wait ~${Math.max(1, queueInfo.avgWaitSeconds)}s` : ""}
+                    {settings.sameCountryOnly ? " · same-country only (Settings)" : ""}
+                  </Typography>
+                )}
 
                 {messages.map((m, i) => {
-                  const ts = new Date(m.ts).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
                   const prevMsg = messages[i - 1];
-                  const showTs = !prevMsg || m.ts - prevMsg.ts > 60_000; // show time gap > 1 min
                   return (
-                    <Box key={m.id}>
-                      {showTs && m.from !== "system" && (
-                        <Typography sx={{ color: "text.disabled", fontSize: 11, textAlign: "center", my: 0.75, userSelect: "none" }}>
-                          {ts}
-                        </Typography>
-                      )}
-                      <Box sx={{ mb: settings.compactChat ? 0 : 0.25, "&:hover .msg-actions": { opacity: 1 }, "&:hover .msg-ts": { opacity: 1 } }}>
-                        {m.from === "system" ? (
-                          <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13, userSelect: "text" }}>
-                            {m.text}
-                          </Typography>
-                        ) : (
-                          <Box sx={{ display: "flex", gap: 0.75, userSelect: "text", alignItems: "flex-start" }}>
-                            <Typography component="span" sx={{
-                              fontWeight: 700, flexShrink: 0, fontSize: "inherit",
-                              color: m.from === "me" ? "#6C63FF" : "#FF6584",
-                            }}>
-                              {m.from === "me" ? "You" : strangerLabel}:
-                            </Typography>
-                            {m.imageUrl ? (
-                              <Box component="a" href={m.imageUrl} target="_blank" rel="noopener noreferrer"
-                                sx={{ flex: 1, display: "block" }}>
-                                <Box component="img" src={m.imageUrl} alt="shared image"
-                                  sx={{ maxWidth: 220, maxHeight: 220, borderRadius: 2, display: "block", cursor: "pointer",
-                                    border: "1px solid rgba(255,255,255,0.1)", mt: 0.25 }} />
-                              </Box>
-                            ) : (
-                            <Typography component="span" sx={{ wordBreak: "break-word", color: "text.primary", fontSize: "inherit", flex: 1 }}>
-                              {m.text}
-                              {m.encrypted && <LockIcon sx={{ fontSize: 9, opacity: 0.4, ml: 0.5, verticalAlign: "middle" }} />}
-                            </Typography>
-                            )}
-                            <Typography className="msg-ts" component="span"
-                              sx={{ fontSize: 10, color: "text.disabled", flexShrink: 0, alignSelf: "flex-end", opacity: 0, transition: "opacity 0.15s", pb: 0.1 }}>
-                              {ts}
-                            </Typography>
-                            <Tooltip title="Translate message">
-                              <IconButton
-                                className="msg-actions"
-                                size="small"
-                                sx={{ opacity: 0, transition: "opacity 0.15s", flexShrink: 0, p: 0.2 }}
-                                onClick={() => window.open(
-                                  `https://translate.google.com/?sl=auto&tl=en&text=${encodeURIComponent(m.text)}&op=translate`,
-                                  "_blank", "noopener,noreferrer"
-                                )}
-                              >
-                                <Typography sx={{ fontSize: 11 }}>🌐</Typography>
-                              </IconButton>
-                            </Tooltip>
-                          </Box>
-                        )}
-                      </Box>
-                    </Box>
+                    <ChatMessage key={m.id} m={m}
+                      strangerLabel={strangerLabel}
+                      hideLinks={settings.hideStrangerLinks}
+                      showTime={m.from !== "system" && (!prevMsg || m.ts - prevMsg.ts > 60_000)}
+                      compact={settings.compactChat}
+                      canInteract={isConnected}
+                      onReply={handleReply} onReact={handleReact} onUnsend={handleUnsend} />
                   );
                 })}
+
+                {state === "ended" && lastRoomId && isEnabled("karma") && (
+                  <PostChatCard
+                    canRate={!!user && peerIsMember}
+                    onRate={ratePeer}
+                    onBlock={blockPeer}
+                    onReport={() => setReportDialog(true)} />
+                )}
+                {autoNextIn !== null && (
+                  <Stack direction="row" alignItems="center" spacing={1} sx={{ my: 1 }}>
+                    <Typography fontSize={13} color="text.secondary">Finding a new stranger in {autoNextIn}…</Typography>
+                    <Button size="small" onClick={cancelAutoNext}>Cancel</Button>
+                  </Stack>
+                )}
 
                 {peerTyping && (
                   <Typography sx={{ color: "text.disabled", fontStyle: "italic", fontSize: 13 }}>
@@ -1373,6 +1553,19 @@ export default function Chat() {
                   </Box>
                 </Box>
               </Fade>
+
+              {game && isConnected && socketRef.current?.id && (
+                <TicTacToe game={game} myId={socketRef.current.id} onAction={gameAction} />
+              )}
+
+              {replyTo && isConnected && (
+                <Box sx={{ px: 1.5, py: 0.5, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 1 }}>
+                  <Typography fontSize={12} color="text.secondary" sx={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", borderLeft: "2px solid #6C63FF", pl: 1 }}>
+                    Replying to {replyTo.from === "me" ? "yourself" : strangerLabel}: {replyTo.text}
+                  </Typography>
+                  <IconButton size="small" onClick={() => setReplyTo(null)} aria-label="Cancel reply"><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+                </Box>
+              )}
 
               {/* Reaction bar */}
               {showReactions && isConnected && (
@@ -1413,11 +1606,30 @@ export default function Chat() {
                     </IconButton>
                   </span>
                 </Tooltip>
+                {isEnabled("voice_notes") && (
+                  <VoiceNoteButton disabled={!isConnected} onRecorded={sendVoiceNote} onError={setSnack} />
+                )}
+                {isEnabled("icebreakers") && (
+                  <Icebreakers interests={sharedInterests.length ? sharedInterests : interests} disabled={!isConnected}
+                    onPick={(q) => sendText(q)} />
+                )}
+                {isEnabled("mini_games") && (
+                  <Tooltip title="Play tic-tac-toe">
+                    <span>
+                      <IconButton size="small" disabled={!isConnected || !!game} aria-label="Play tic-tac-toe"
+                        onClick={() => { gameAction("invite"); setSnack("Game invite sent."); }}>
+                        <SportsEsportsIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                )}
                 <Box sx={{ flex: 1, position: "relative" }}>
                   <TextField
                     size="small" fullWidth multiline maxRows={isMobile ? 3 : 5}
                     placeholder={
-                      !isConnected ? "Connecting…"
+                      state === "ended" ? "Chat ended — press New Chat to meet someone new"
+                      : isWaiting ? "Waiting for a stranger…"
+                      : !isConnected ? (connected ? "Press Start to begin" : "Connecting…")
                       : e2eReady ? "🔒 Encrypted message…"
                       : "Type a message…"
                     }

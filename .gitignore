@@ -32,3 +32,5 @@ Thumbs.db
 
 # Docker volumes
 redis_data/
+
+e2e/screenshots/

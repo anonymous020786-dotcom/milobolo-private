@@ -18,8 +18,10 @@ export default function OnlineCounter() {
     };
 
     poll();
+    // Re-check shortly after mount so the viewer's own freshly-connected socket is counted
+    const early = setTimeout(poll, 2500);
     const id = setInterval(poll, 10000); // refresh every 10s
-    return () => clearInterval(id);
+    return () => { clearTimeout(early); clearInterval(id); };
   }, []);
 
   if (count === null) return null;

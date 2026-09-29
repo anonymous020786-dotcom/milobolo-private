@@ -113,6 +113,17 @@ const templates = {
       ${otpBlock(otp)}
       <p style="color:#666;font-size:13px;margin:0;">If you didn't request this change, please secure your account immediately.</p>`,
   },
+  college_verify: {
+    subject: "Verify your student email — MiloBolo College Mode",
+    icon: "🎓",
+    heading: "Verify your college email",
+    body: (otp) => `
+      <p style="color:#ccc;font-size:15px;line-height:1.7;margin:0 0 8px;">
+        Enter this code on MiloBolo to unlock College Mode and your verified-student badge.
+      </p>
+      ${otpBlock(otp)}
+      <p style="color:#666;font-size:13px;margin:0;">This code expires in 10 minutes. If you didn't request it, you can ignore this email.</p>`,
+  },
 };
 
 exports.sendOTP = async ({ email, otp, type }) => {

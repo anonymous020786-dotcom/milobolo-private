@@ -16,7 +16,8 @@ import VideocamOffIcon from "@mui/icons-material/VideocamOff";
 import MicIcon from "@mui/icons-material/Mic";
 import MicOffIcon from "@mui/icons-material/MicOff";
 import FavoriteIcon from "@mui/icons-material/Favorite";
-import { io, Socket } from "socket.io-client";
+import { Socket } from "socket.io-client";
+import { createSignalSocket } from "@/lib/socket";
 import Layout from "@/components/Layout";
 import SeoHead from "@/components/SeoHead";
 import AgeGate from "@/components/AgeGate";
@@ -115,10 +116,7 @@ export default function SpeedDating() {
   }, []);
 
   useEffect(() => {
-    const socket = io(process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000", {
-      transports: ["websocket"],
-      reconnection: true,
-    });
+    const socket = createSignalSocket();
     socketRef.current = socket;
 
     socket.on("match_found", async ({ roomId: rid, isInitiator, peer }) => {

@@ -14,17 +14,11 @@ import PeopleIcon from "@mui/icons-material/People";
 import Layout from "@/components/Layout";
 import SeoHead from "@/components/SeoHead";
 import { useAuth } from "@/context/AuthContext";
-import { supabase } from "@/lib/supabase";
+import { signalFetch } from "@/lib/socket";
 
-const COLLEGE_DOMAINS = [
-  ".edu", ".ac.in", ".ac.uk", ".ac.nz", ".ac.za",
-  ".edu.au", ".edu.sg", ".edu.hk", ".edu.cn", ".edu.br",
-  ".uni-", "university", "college", "institute", "iit", "nit",
-];
-
+// Must match the server rule: .edu, .edu.xx or .ac.xx (e.g. mit.edu, du.ac.in, unimelb.edu.au)
 function isCollegeEmail(email: string): boolean {
-  const lower = email.toLowerCase();
-  return COLLEGE_DOMAINS.some((d) => lower.includes(d));
+  return /@([a-z0-9-]+\.)+(edu|edu\.[a-z]{2}|ac\.[a-z]{2})$/i.test(email.trim());
 }
 
 const STEPS = ["Enter college email", "Verify OTP", "Start chatting"];
@@ -38,7 +32,7 @@ const PERKS = [
 
 export default function CollegePage() {
   const router = useRouter();
-  const { user, profile } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
 
   const [step, setStep] = useState(0);
   const [email, setEmail] = useState(user?.email || "");
@@ -58,20 +52,11 @@ export default function CollegePage() {
     }
     setLoading(true);
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000"}/api/send-otp`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, type: "college_verify" }),
-        }
-      );
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || "Failed to send OTP."); return; }
+      await signalFetch("/api/send-otp", { method: "POST", body: JSON.stringify({ email, type: "college_verify" }) });
       setSent(true);
       setStep(1);
-    } catch {
-      setError("Network error. Please try again.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Network error. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -83,26 +68,12 @@ export default function CollegePage() {
     if (!user) { router.push("/auth/login"); return; }
     setLoading(true);
     try {
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_SIGNALING_URL || "http://localhost:4000"}/api/verify-otp`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, otp, type: "college_verify" }),
-        }
-      );
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || "Invalid OTP."); return; }
-
-      // Mark profile as college-verified
-      await supabase.from("profiles").update({
-        college_verified: true,
-        college_email: email,
-      } as Record<string, unknown>).eq("id", user.id);
-
+      // The server checks the code and marks the profile verified — the browser can't set it
+      await signalFetch("/api/college/verify", { method: "POST", body: JSON.stringify({ email, otp }) });
+      await refreshProfile();
       setStep(2);
-    } catch {
-      setError("Verification failed. Please try again.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Verification failed. Please try again.");
     } finally {
       setLoading(false);
     }

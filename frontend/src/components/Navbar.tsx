@@ -11,6 +11,8 @@ import NotificationsIcon from "@mui/icons-material/Notifications";
 import PeopleIcon from "@mui/icons-material/People";
 import { useAuth } from "@/context/AuthContext";
 import { supabase } from "@/lib/supabase";
+import NotificationBell from "@/components/NotificationBell";
+import ChatIcon from "@mui/icons-material/Chat";
 
 export default function Navbar() {
   const { user, profile, signOut } = useAuth();
@@ -28,6 +30,7 @@ export default function Navbar() {
     { label: "Speed Dating", href: "/speed-dating" },
     { label: "College", href: "/college" },
     { label: "Topics", href: "/topics" },
+    { label: "Leaderboard", href: "/leaderboard" },
     { label: "Blog", href: "/blog" },
     { label: "About", href: "/about" },
   ];
@@ -76,15 +79,7 @@ export default function Navbar() {
         {isMobile ? (
           <>
             {/* Mobile: notification bell + hamburger */}
-            {user && pendingRequests > 0 && (
-              <Tooltip title={`${pendingRequests} friend request${pendingRequests > 1 ? "s" : ""}`}>
-                <IconButton onClick={() => router.push("/friends")} color="inherit" sx={{ mr: 0.5 }}>
-                  <Badge badgeContent={pendingRequests} color="error" max={9}>
-                    <NotificationsIcon />
-                  </Badge>
-                </IconButton>
-              </Tooltip>
-            )}
+            <NotificationBell />
             <IconButton onClick={() => setDrawerOpen(true)} color="inherit">
               <MenuIcon />
             </IconButton>
@@ -98,6 +93,13 @@ export default function Navbar() {
                     </ListItemButton>
                   </ListItem>
                 ))}
+                {user && (
+                  <ListItem disablePadding>
+                    <ListItemButton onClick={() => { router.push("/messages"); setDrawerOpen(false); }}>
+                      <ListItemText primary="Messages" />
+                    </ListItemButton>
+                  </ListItem>
+                )}
                 {user && (
                   <ListItem disablePadding>
                     <ListItemButton onClick={() => { router.push("/friends"); setDrawerOpen(false); }}>
@@ -121,7 +123,7 @@ export default function Navbar() {
                         <ListItemText primary="Settings" />
                       </ListItemButton>
                     </ListItem>
-                    {profile?.role && ["admin","superadmin"].includes(profile.role) && (
+                    {profile?.role && ["moderator","admin","superadmin"].includes(profile.role) && (
                       <ListItem disablePadding>
                         <ListItemButton onClick={() => { router.push("/admin"); setDrawerOpen(false); }}>
                           <ListItemText primary="Admin Panel" />
@@ -154,6 +156,13 @@ export default function Navbar() {
             ))}
             {user ? (
               <>
+                <Tooltip title="Messages">
+                  <IconButton onClick={() => router.push("/messages")} aria-label="Messages"
+                    sx={{ color: router.pathname === "/messages" ? "primary.main" : "text.secondary" }}>
+                    <ChatIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                <NotificationBell />
                 {/* Friends button with badge */}
                 <Tooltip title={pendingRequests ? `${pendingRequests} pending request${pendingRequests > 1 ? "s" : ""}` : "Friends"}>
                   <IconButton
@@ -182,7 +191,7 @@ export default function Navbar() {
                   <MenuItem onClick={() => { router.push("/profile"); setAnchorEl(null); }}>Profile</MenuItem>
                   <MenuItem onClick={() => { router.push("/settings"); setAnchorEl(null); }}>Settings</MenuItem>
                   <MenuItem onClick={() => { router.push("/history"); setAnchorEl(null); }}>Chat History</MenuItem>
-                  {profile?.role && ["admin","superadmin"].includes(profile.role) && (
+                  {profile?.role && ["moderator","admin","superadmin"].includes(profile.role) && (
                     <MenuItem onClick={() => { router.push("/admin"); setAnchorEl(null); }}>
                       Admin Panel <Chip label="Admin" size="small" color="primary" sx={{ ml: 1 }} />
                     </MenuItem>

@@ -34,7 +34,7 @@ export default function ChatHistory() {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ total: 0, totalTime: 0, videoChats: 0, textChats: 0 });
   const [search, setSearch] = useState("");
-  const [modeFilter, setModeFilter] = useState<"all" | "video" | "text">("all");
+  const [modeFilter, setModeFilter] = useState<"all" | "video" | "text" | "voice">("all");
 
   useEffect(() => {
     if (!authLoading && !user) router.push("/auth/login?next=/history");
@@ -165,6 +165,7 @@ export default function ChatHistory() {
               <ToggleButton value="all">All</ToggleButton>
               <ToggleButton value="video"><VideocamIcon sx={{ fontSize: 16, mr: 0.5 }} />Video</ToggleButton>
               <ToggleButton value="text"><ChatIcon sx={{ fontSize: 16, mr: 0.5 }} />Text</ToggleButton>
+              <ToggleButton value="voice">Voice</ToggleButton>
             </ToggleButtonGroup>
             <Typography variant="caption" color="text.disabled" sx={{ alignSelf: "center" }}>
               {filtered.length} of {records.length} records
@@ -202,7 +203,7 @@ export default function ChatHistory() {
                     <TableCell>
                       <Chip
                         icon={r.mode === "video" ? <VideocamIcon /> : <ChatIcon />}
-                        label={r.mode === "video" ? "Video" : r.mode === "text" ? "Text" : r.mode}
+                        label={({ video: "Video", text: "Text", voice: "Voice", spy: "Spy", speed_dating: "Speed dating" } as Record<string, string>)[r.mode] || r.mode}
                         size="small"
                         color={r.mode === "video" ? "primary" : "default"}
                       />

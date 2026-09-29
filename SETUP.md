@@ -4,6 +4,11 @@
 1. Go to supabase.com → New Project
 2. Copy Project URL + anon key + service role key → paste in `.env`
 3. Go to SQL Editor → paste contents of `supabase/schema.sql` → Run
+4. Then run, in this order: `supabase/schema_v2.sql`, `supabase/migrations/001_schema_additions.sql`,
+   `supabase/migrations/20260624_add_missing_columns.sql`, `supabase/migrations/20260927_hardening_and_social.sql`.
+   The last one is required: it stops users from editing their own `role`/ban status, lets admins
+   actually ban people, and adds the tables for karma, blocks, direct messages and notifications.
+   It is safe to re-run.
 
 ## Step 2: Enable Google OAuth in Supabase
 1. Supabase Dashboard → Authentication → Providers → Google → Enable

@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 
-const STORAGE_KEY = "mb_settings";
+export const SETTINGS_STORAGE_KEY = "mb_settings";
 
 export interface AppSettings {
   defaultMode: "video" | "text";
@@ -11,9 +11,13 @@ export interface AppSettings {
   allowFriendRequests: boolean;
   saveHistory: boolean;
   compactChat: boolean;
+  autoNext: boolean;
+  sameCountryOnly: boolean;
+  hideStrangerLinks: boolean;
+  sendReadReceipts: boolean;
 }
 
-const DEFAULTS: AppSettings = {
+export const SETTINGS_DEFAULTS: AppSettings = {
   defaultMode: "video",
   defaultLanguage: "",
   showTypingIndicator: true,
@@ -22,15 +26,21 @@ const DEFAULTS: AppSettings = {
   allowFriendRequests: true,
   saveHistory: true,
   compactChat: false,
+  autoNext: false,
+  sameCountryOnly: false,
+  hideStrangerLinks: true,
+  sendReadReceipts: true,
 };
 
+export function loadSettings(): AppSettings {
+  if (typeof window === "undefined") return SETTINGS_DEFAULTS;
+  try {
+    return { ...SETTINGS_DEFAULTS, ...JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || "{}") };
+  } catch {
+    return SETTINGS_DEFAULTS;
+  }
+}
+
 export function useSettings(): AppSettings {
-  return useMemo(() => {
-    if (typeof window === "undefined") return DEFAULTS;
-    try {
-      return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
-    } catch {
-      return DEFAULTS;
-    }
-  }, []);
+  return useMemo(() => loadSettings(), []);
 }

@@ -27,6 +27,8 @@ export type Profile = {
   total_chats: number;
   report_count: number;
   allow_friend_requests: boolean;
+  karma: number;
+  college_verified: boolean;
   created_at: string;
 };
 
